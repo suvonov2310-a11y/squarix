@@ -132,7 +132,7 @@ const MessageItem = ({ msg, client, activeChat, theme, onMessageClick, getReplie
 };
 
 function App() {
-  const [loginMode, setLoginMode] = useState('user'); // 'user' yoki 'bot'
+  const [loginMode, setLoginMode] = useState('user'); 
   const [phoneNumber, setPhoneNumber] = useState('');
   const [phoneCode, setPhoneCode] = useState('');
   const [phoneCodeHash, setPhoneCodeHash] = useState('');
@@ -247,17 +247,12 @@ function App() {
     localStorage.setItem("squarix_ghost", newGhost ? "true" : "false");
   };
 
-  // YANGI: Akkauntdan to'liq chiqish va yangi kiritish
   const handleLogout = async () => {
-    const confirmLogout = window.confirm("Haqiqatan ham akkauntdan chiqmoqchimisiz? (Boshqa akkaunt qo'shish uchun)");
+    const confirmLogout = window.confirm("Haqiqatan ham akkauntdan chiqmoqchimisiz?");
     if (!confirmLogout) return;
-    
     try {
-      if (client) {
-         await client.invoke(new Api.auth.LogOut());
-      }
+      if (client) await client.invoke(new Api.auth.LogOut());
     } catch (e) { console.log(e); }
-    
     localStorage.removeItem("squarix_session");
     window.location.reload(); 
   };
@@ -286,23 +281,47 @@ function App() {
       const message = event.message;
       const currentChat = activeChatRef.current;
       
+      let isNewChat = false;
+      
       setChats(prevChats => {
         const chatIndex = prevChats.findIndex(c => String(c.id).replace('-100','') === String(message.chatId).replace('-100',''));
-        if(chatIndex > -1) {
+        if (chatIndex > -1) {
           const newChats = [...prevChats];
           const chatToUpdate = { ...newChats[chatIndex], message: message };
           
           if (!message.out && String(chatToUpdate.id).replace('-100','') !== String(currentChat?.id).replace('-100','')) {
             chatToUpdate.dialog = { ...chatToUpdate.dialog, unreadCount: (chatToUpdate.dialog?.unreadCount || 0) + 1 };
           }
-
-          newChats[chatIndex] = chatToUpdate;
-          const [movedChat] = newChats.splice(chatIndex, 1);
-          newChats.unshift(movedChat);
+          newChats.splice(chatIndex, 1);
+          newChats.unshift(chatToUpdate);
           return newChats;
+        } else {
+          // Xabar ro'yxatda yo'q chatdan keldi (Botlar uchun muhim)
+          isNewChat = true;
+          return prevChats;
         }
-        return prevChats;
       });
+
+      // Agar chat ro'yxatda yo'q bo'lsa (yangi foydalanuvchi yozsa), uni API dan tortib olamiz
+      if (isNewChat) {
+         try {
+            const entity = await client.getEntity(message.chatId);
+            const newChat = {
+               id: message.chatId,
+               entity: entity,
+               title: entity.title || entity.firstName || "Yangi chat",
+               isUser: entity.className === 'User',
+               isGroup: entity.className === 'Chat' || entity.megagroup,
+               isChannel: entity.className === 'Channel' && !entity.megagroup,
+               dialog: { unreadCount: 1 },
+               message: message
+            };
+            setChats(prev => {
+               if (prev.some(c => String(c.id).replace('-100','') === String(message.chatId).replace('-100',''))) return prev;
+               return [newChat, ...prev];
+            });
+         } catch (e) { console.log("Yangi chatni yuklashda xato:", e); }
+      }
 
       if (currentChat && message.chatId) {
         const msgId = String(message.chatId).replace('-100', '');
@@ -400,32 +419,47 @@ function App() {
     setLoadingChats(true);
     try {
       const me = await tgClient.getMe();
-      
-      // Agar kiritilgan bo'lsa (Auth muvaffaqiyatli)
       setCurrentUser(me);
-      const fullMe = await tgClient.invoke(new Api.users.GetFullUser({ id: me.id }));
-      setCurrentUserFull(fullMe);
-      if (me.photo) {
-        const buffer = await tgClient.downloadProfilePhoto(me);
-        if (buffer && buffer.length > 0) setMyPhotoUrl(URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' })));
-      }
       
-      const dialogs = await tgClient.getDialogs({ limit: 150 }); 
-      setChats(dialogs);
+      try {
+        const fullMe = await tgClient.invoke(new Api.users.GetFullUser({ id: me.id }));
+        setCurrentUserFull(fullMe);
+      } catch (e) { console.log("GetFullUser ishlamadi (Yoki bot)", e.message); }
 
       try {
-        const storiesResult = await tgClient.invoke(new Api.stories.GetAllStories({}));
-        if (storiesResult && storiesResult.peerStories) {
-          setStories(storiesResult.peerStories);
+        if (me.photo) {
+          const buffer = await tgClient.downloadProfilePhoto(me);
+          if (buffer && buffer.length > 0) setMyPhotoUrl(URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' })));
         }
-      } catch (err) { console.log("Story yuklashda xatolik (Yoki bu bot akkaunti)"); }
+      } catch (e) { console.log("Profil rasmi yuklanmadi", e.message); }
+      
+      // FAQAT ODDIY ODAM BO'LSA RO'YXATNI TORTAMIZ (Botlarga Telegram bunga ruxsat bermaydi)
+      if (!me.bot) {
+         const dialogs = await tgClient.getDialogs({ limit: 150 }); 
+         setChats(dialogs);
+
+         try {
+           const storiesResult = await tgClient.invoke(new Api.stories.GetAllStories({}));
+           if (storiesResult && storiesResult.peerStories) {
+             setStories(storiesResult.peerStories);
+           }
+         } catch (err) { console.log("Story yuklashda xatolik", err.message); }
+      } else {
+         // Bot uchun bo'sh ro'yxat va xabar
+         setChats([]);
+         console.log("Bot rejimida ishlayapmiz, chatlar kutilyapti...");
+      }
       
     } catch (error) { 
-      // YANGI: Agar sessiya Telegramdan uzilgan bo'lsa (Terminate qilingan bo'lsa) tutib olish
-      console.error("fetchInitialData xatosi (Sessiya o'lgan):", error);
-      alert("Sessiya yaroqsiz yoki boshqa qurilmadan o'chirilgan! Iltimos, qaytadan kiring.");
-      localStorage.removeItem("squarix_session");
-      window.location.reload(); 
+      console.error("fetchInitialData ASOSIY XATOSI:", error);
+      const errText = error.message ? error.message.toUpperCase() : "";
+      
+      // Xato faqat ruxsatnomaga bog'liq bo'lsagina sessiyani o'chiramiz!
+      if (errText.includes("AUTH") || errText.includes("UNAUTHORIZED") || errText.includes("REVOKED") || errText.includes("EXPIRED") || errText.includes("DEACTIVATED")) {
+        alert("Sessiya eskirgan yoki boshqa qurilmadan yopilgan! Qaytadan kiring.");
+        localStorage.removeItem("squarix_session");
+        window.location.reload(); 
+      }
     }
     setLoadingChats(false);
   };
@@ -919,7 +953,6 @@ function App() {
         </div>
       )}
 
-      {/* CHAP TOMON RO'YXAT (Chatlar va Sozlamalar) */}
       <div style={{ display: (isMobile && activeChat) ? 'none' : 'flex', width: isMobile ? '100%' : '320px', backgroundColor: theme.panelBg, borderRight: `1px solid ${theme.border}`, flexDirection: 'column' }}>
         {showProfileSettings ? (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: theme.bg, overflowY: 'auto' }}>
@@ -932,7 +965,7 @@ function App() {
                 {myPhotoUrl ? <img src={myPhotoUrl} alt="Profil" style={{ width: '120px', height: '120px', borderRadius: '50%', objectFit: 'cover', border: '3px solid #0088cc' }} /> : <div style={{ width: '120px', height: '120px', borderRadius: '50%', backgroundColor: '#0088cc', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '40px', fontWeight: 'bold' }}>{currentUser?.firstName?.charAt(0) || 'U'}</div>}
               </div>
               <h2 style={{ margin: '0 0 5px 0', fontSize: '20px', color: theme.text }}>{currentUser?.firstName} {currentUser?.lastName}</h2>
-              <p style={{ margin: 0, color: theme.textMuted, fontSize: '15px' }}>+{currentUser?.phone}</p>
+              {currentUser?.phone && <p style={{ margin: 0, color: theme.textMuted, fontSize: '15px' }}>+{currentUser?.phone}</p>}
             </div>
             
             <div style={{ padding: '15px 20px', backgroundColor: theme.panelBg, marginTop: '10px', borderTop: `1px solid ${theme.border}`, borderBottom: `1px solid ${theme.border}` }}>
@@ -972,7 +1005,6 @@ function App() {
               <input type="file" id="profilePic" accept="image/*" style={{ display: 'none' }} onChange={handleProfilePhotoUpload} />
               <label htmlFor="profilePic" style={{ display: 'block', width: '100%', padding: '12px', backgroundColor: '#28a745', color: 'white', borderRadius: '8px', cursor: 'pointer', textAlign: 'center', fontSize: '15px', fontWeight: 'bold' }}>Rasmni o'zgartirish 📷</label>
               
-              {/* YANGI: Akkauntdan chiqish tugmasi */}
               <button onClick={handleLogout} style={{ width: '100%', padding: '12px', backgroundColor: '#dc3545', color: 'white', borderRadius: '8px', cursor: 'pointer', border: 'none', fontSize: '15px', fontWeight: 'bold' }}>Akkauntdan chiqish 🚪</button>
             </div>
           </div>
@@ -1025,6 +1057,14 @@ function App() {
             
             <div style={{ flex: 1, overflowY: 'auto', backgroundColor: theme.panelBg }}>
               {loadingChats && <div style={{ padding: '20px', textAlign: 'center', color: theme.textMuted }}>Yuklanmoqda...</div>}
+              
+              {/* YANGI: Botlarga qo'llanma */}
+              {chats.length === 0 && !loadingChats && currentUser?.bot && (
+                <div style={{ padding: '20px', textAlign: 'center', color: theme.textMuted, fontSize: '14px' }}>
+                   🤖 Siz Bot panelidasiz. Chatlar bu yerda kimdir sizga yozgandagina paydo bo'ladi.
+                </div>
+              )}
+
               {filteredChats.map((chat, idx) => {
                 let isListRead = false;
                 const isListOut = chat.message?.out;
@@ -1064,7 +1104,6 @@ function App() {
         )}
       </div>
 
-      {/* O'NG TOMON YOZISHMALAR */}
       <div style={{ display: (isMobile && !activeChat) ? 'none' : 'flex', flex: 1, flexDirection: 'column', backgroundColor: theme.chatBg, position: 'relative' }}>
         {activeChat ? (
           <>
