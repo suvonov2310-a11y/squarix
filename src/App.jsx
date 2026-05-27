@@ -8,7 +8,6 @@ const apiId = 3855698;
 const apiHash = '1f631581137b45d42f1fa79fd58f2c53';
 
 let globalTgClient = null;
-let isClientConnecting = false;
 
 const EMOJIS = [
   '😀','😃','😄','😁','😆','😅','😂','🤣','🥲','☺️','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😗',
@@ -178,10 +177,8 @@ function App() {
   const [storyProgress, setStoryProgress] = useState(0);
 
   const [isDarkMode, setIsDarkMode] = useState(false);
-  
   const [isGhostMode, setIsGhostMode] = useState(false);
   const isGhostModeRef = useRef(isGhostMode);
-
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   
   const messagesEndRef = useRef(null);
@@ -215,6 +212,7 @@ function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Avtomatik kirish qismi (Faqat sahifa yuklanganda ishlaydi)
   useEffect(() => {
     const savedTheme = localStorage.getItem("squarix_theme");
     if (savedTheme === "dark") setIsDarkMode(true);
@@ -228,9 +226,17 @@ function App() {
     const savedSession = localStorage.getItem("squarix_session");
     if (savedSession) { 
         setStep(4); 
-        initClient().then(c => {
-            if (c) fetchInitialData(c);
-        }); 
+        const tgClient = new TelegramClient(new StringSession(savedSession), apiId, apiHash, { connectionRetries: 5 });
+        tgClient.connect().then(() => {
+            globalTgClient = tgClient;
+            setClient(tgClient);
+            fetchInitialData(tgClient);
+        }).catch(e => {
+            if (e.message && (e.message.includes("AUTH") || e.message.includes("REVOKED") || e.message.includes("DEACTIVATED"))) {
+                localStorage.removeItem("squarix_session");
+                window.location.reload();
+            }
+        });
     }
   }, []);
 
@@ -296,13 +302,11 @@ function App() {
           newChats.unshift(chatToUpdate);
           return newChats;
         } else {
-          // Xabar ro'yxatda yo'q chatdan keldi (Botlar uchun muhim)
           isNewChat = true;
           return prevChats;
         }
       });
 
-      // Agar chat ro'yxatda yo'q bo'lsa (yangi foydalanuvchi yozsa), uni API dan tortib olamiz
       if (isNewChat) {
          try {
             const entity = await client.getEntity(message.chatId);
@@ -320,7 +324,7 @@ function App() {
                if (prev.some(c => String(c.id).replace('-100','') === String(message.chatId).replace('-100',''))) return prev;
                return [newChat, ...prev];
             });
-         } catch (e) { console.log("Yangi chatni yuklashda xato:", e); }
+         } catch (e) { console.log(e); }
       }
 
       if (currentChat && message.chatId) {
@@ -335,7 +339,7 @@ function App() {
           if (!isGhostModeRef.current && !message.out) {
             try {
               await client.invoke(new Api.messages.ReadHistory({ peer: currentChat.entity, maxId: 0 }));
-            } catch (e) { console.log(e); }
+            } catch (e) {}
           }
         }
       }
@@ -371,49 +375,6 @@ function App() {
     }
   }, [client]);
 
-  const initClient = async () => {
-    if (globalTgClient) {
-      if (!client) setClient(globalTgClient);
-      return globalTgClient;
-    }
-    
-    if (isClientConnecting) {
-      return new Promise((resolve) => {
-         const check = setInterval(() => {
-            if (!isClientConnecting && globalTgClient) {
-               clearInterval(check);
-               if (!client) setClient(globalTgClient);
-               resolve(globalTgClient);
-            }
-         }, 50);
-      });
-    }
-
-    isClientConnecting = true; 
-    try {
-      const savedSession = localStorage.getItem("squarix_session") || "";
-      const stringSession = new StringSession(savedSession);
-      const telegramClient = new TelegramClient(stringSession, apiId, apiHash, { connectionRetries: 5 });
-      
-      await telegramClient.connect(); 
-      
-      globalTgClient = telegramClient;
-      setClient(telegramClient);
-      return telegramClient;
-
-    } catch (error) {
-      console.error("Telegram ulanish xatosi:", error);
-      if (error.message && error.message.includes("AUTH_KEY_DUPLICATED")) {
-        alert("Sessiya xavfsizlik sababli bloklandi (Double Connect). Iltimos raqamingiz orqali qayta kiring.");
-        localStorage.removeItem("squarix_session");
-        window.location.reload(); 
-      }
-      return null;
-    } finally {
-      isClientConnecting = false; 
-    }
-  };
-
   const fetchInitialData = async (tgClient) => {
     if (!tgClient) return;
     setLoadingChats(true);
@@ -424,16 +385,15 @@ function App() {
       try {
         const fullMe = await tgClient.invoke(new Api.users.GetFullUser({ id: me.id }));
         setCurrentUserFull(fullMe);
-      } catch (e) { console.log("GetFullUser ishlamadi (Yoki bot)", e.message); }
+      } catch (e) {}
 
       try {
         if (me.photo) {
           const buffer = await tgClient.downloadProfilePhoto(me);
           if (buffer && buffer.length > 0) setMyPhotoUrl(URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' })));
         }
-      } catch (e) { console.log("Profil rasmi yuklanmadi", e.message); }
+      } catch (e) {}
       
-      // FAQAT ODDIY ODAM BO'LSA RO'YXATNI TORTAMIZ (Botlarga Telegram bunga ruxsat bermaydi)
       if (!me.bot) {
          const dialogs = await tgClient.getDialogs({ limit: 150 }); 
          setChats(dialogs);
@@ -443,20 +403,15 @@ function App() {
            if (storiesResult && storiesResult.peerStories) {
              setStories(storiesResult.peerStories);
            }
-         } catch (err) { console.log("Story yuklashda xatolik", err.message); }
+         } catch (err) {}
       } else {
-         // Bot uchun bo'sh ro'yxat va xabar
-         setChats([]);
-         console.log("Bot rejimida ishlayapmiz, chatlar kutilyapti...");
+         setChats([]); // Botlar uchun bo'sh
       }
       
     } catch (error) { 
-      console.error("fetchInitialData ASOSIY XATOSI:", error);
       const errText = error.message ? error.message.toUpperCase() : "";
-      
-      // Xato faqat ruxsatnomaga bog'liq bo'lsagina sessiyani o'chiramiz!
-      if (errText.includes("AUTH") || errText.includes("UNAUTHORIZED") || errText.includes("REVOKED") || errText.includes("EXPIRED") || errText.includes("DEACTIVATED")) {
-        alert("Sessiya eskirgan yoki boshqa qurilmadan yopilgan! Qaytadan kiring.");
+      if (errText.includes("AUTH_KEY_UNREGISTERED") || errText.includes("REVOKED") || errText.includes("DEACTIVATED")) {
+        alert("Sessiya yaroqsiz! Qaytadan kiring.");
         localStorage.removeItem("squarix_session");
         window.location.reload(); 
       }
@@ -464,69 +419,70 @@ function App() {
     setLoadingChats(false);
   };
 
+  // YANGI TOZA ULANISH (ODDIY AKKAUNT)
   const sendCode = async () => {
     if (!phoneNumber) return;
-    const tgClient = await initClient();
-    if (!tgClient) return;
     try {
-      const result = await tgClient.sendCode({ apiId, apiHash }, phoneNumber);
+      // Eskini unutib, yangi toza ulanish yaratamiz
+      const newClient = new TelegramClient(new StringSession(""), apiId, apiHash, { connectionRetries: 5 });
+      await newClient.connect();
+      const result = await newClient.sendCode({ apiId, apiHash }, phoneNumber);
+      
+      globalTgClient = newClient;
+      setClient(newClient);
       setPhoneCodeHash(result.phoneCodeHash);
       setStep(2);
-    } catch (error) { alert("Xatolik: " + error.message); }
+    } catch (error) { alert("Xatolik (Raqamni tekshiring): " + error.message); }
   };
 
   const verifyCode = async () => {
-    if (!phoneCode) return;
+    if (!phoneCode || !client) return;
     try {
-      const tgClient = await initClient();
-      await tgClient.signIn({ phoneNumber, phoneCodeHash, phoneCode });
-      localStorage.setItem("squarix_session", tgClient.session.save());
+      await client.signIn({ phoneNumber, phoneCodeHash, phoneCode });
+      localStorage.setItem("squarix_session", client.session.save());
       setStep(4);
-      fetchInitialData(tgClient); 
+      fetchInitialData(client); 
     } catch (error) { 
       if (error.message && error.message.includes('SESSION_PASSWORD_NEEDED')) {
          setStep(3); 
       } else {
-         alert("Xatolik: " + error.message); 
+         alert("Kod xatosi: " + error.message); 
       }
     }
   };
 
   const verifyPassword = async () => {
-    if (!password) return;
+    if (!password || !client) return;
     try {
-       const tgClient = await initClient();
-       await tgClient.checkPassword(password);
-       localStorage.setItem("squarix_session", tgClient.session.save());
+       await client.checkPassword(password);
+       localStorage.setItem("squarix_session", client.session.save());
        setStep(4);
-       fetchInitialData(tgClient);
+       fetchInitialData(client);
     } catch (error) {
-       alert("Parol noto'g'ri yoki xatolik: " + error.message);
+       alert("Parol noto'g'ri: " + error.message);
     }
   };
 
+  // YANGI TOZA ULANISH (BOT TOKEN)
   const handleBotLogin = async () => {
     if (!botToken) return;
     try {
-      const tgClient = await initClient();
-      if (!tgClient) return;
+      // Botlar uchun eng to'g'ri usul (.start)
+      const newClient = new TelegramClient(new StringSession(""), apiId, apiHash, { connectionRetries: 5 });
+      await newClient.start({ botAuthToken: botToken });
       
-      await tgClient.invoke(new Api.auth.ImportBotAuthorization({
-        flags: 0,
-        apiId: apiId,
-        apiHash: apiHash,
-        botAuthToken: botToken
-      }));
-
-      localStorage.setItem("squarix_session", tgClient.session.save());
+      globalTgClient = newClient;
+      setClient(newClient);
+      localStorage.setItem("squarix_session", newClient.session.save());
       setStep(4);
-      fetchInitialData(tgClient);
+      fetchInitialData(newClient);
     } catch (error) {
-      alert("Bot token noto'g'ri yoki xatolik: " + error.message);
+      alert("Bot token noto'g'ri: " + error.message);
     }
   };
 
   const openChat = async (chat) => {
+    if (!client) return;
     setActiveChat(chat);
     setMessages([]); 
     setNewMessage('');
@@ -540,22 +496,19 @@ function App() {
     }));
 
     try {
-      let tgClient = await initClient();
-      const msgs = await tgClient.getMessages(chat.entity, { limit: 100 });
+      const msgs = await client.getMessages(chat.entity, { limit: 100 });
       setMessages(msgs.reverse()); 
 
       if (!isGhostModeRef.current) {
-        await tgClient.invoke(new Api.messages.ReadHistory({ peer: chat.entity, maxId: 0 }));
+        await client.invoke(new Api.messages.ReadHistory({ peer: chat.entity, maxId: 0 }));
       }
-    } catch (error) { console.error(error); }
+    } catch (error) {}
   };
 
   const startDirectChat = () => {
     if (!viewProfileData || !viewProfileData.entity) return;
-    
     const targetEntity = viewProfileData.entity;
     const targetIdStr = String(targetEntity.id).replace('-100', '');
-    
     setViewProfileModal(false); 
     
     let existingChat = chats.find(c => String(c.id).replace('-100', '') === targetIdStr);
@@ -575,7 +528,6 @@ function App() {
         dialog: { unreadCount: 0 },
         message: null
       };
-      
       setChats(prev => [newChat, ...prev]);
       openChat(newChat);
       setActiveTab('all');
@@ -583,40 +535,38 @@ function App() {
   };
 
   const sendMessage = async () => {
-    if (!newMessage.trim() || !activeChat) return;
+    if (!newMessage.trim() || !activeChat || !client) return;
     const textToSend = newMessage;
     setNewMessage('');
     setShowEmojiPicker(false);
     try {
-      let tgClient = await initClient();
-      const sentMessage = await tgClient.sendMessage(activeChat.entity, { message: textToSend, replyTo: replyingTo ? replyingTo.id : undefined });
+      const sentMessage = await client.sendMessage(activeChat.entity, { message: textToSend, replyTo: replyingTo ? replyingTo.id : undefined });
       setReplyingTo(null); 
       setMessages(prev => [...prev, sentMessage]);
     } catch (error) { alert("Xabarni yuborib bo'lmadi!"); }
   };
 
   const handleDeleteMessage = async (msgId) => {
+    if (!client) return;
     try {
-      let tgClient = await initClient();
-      await tgClient.deleteMessages(activeChat.entity, [msgId], { revoke: true });
+      await client.deleteMessages(activeChat.entity, [msgId], { revoke: true });
       setMessages(prev => prev.map(m => m.id === msgId ? { ...m, isDeleted: true } : m));
     } catch (error) { alert("Xabarni o'chirib bo'lmadi!"); }
   };
 
   const handleMediaUpload = async (event) => {
     const file = event.target.files[0];
-    if (!file || !activeChat) return;
+    if (!file || !activeChat || !client) return;
     setSendingMedia(true);
     const textToSend = newMessage;
     setNewMessage('');
     setShowEmojiPicker(false);
     try {
-      let tgClient = await initClient();
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
       const cleanFile = new File([buffer], file.name, { type: file.type });
-      const uploadedFile = await tgClient.uploadFile({ file: cleanFile, workers: 1 });
-      const sentMessage = await tgClient.sendMessage(activeChat.entity, { message: textToSend, file: uploadedFile, replyTo: replyingTo ? replyingTo.id : undefined });
+      const uploadedFile = await client.uploadFile({ file: cleanFile, workers: 1 });
+      const sentMessage = await client.sendMessage(activeChat.entity, { message: textToSend, file: uploadedFile, replyTo: replyingTo ? replyingTo.id : undefined });
       setReplyingTo(null);
       setMessages(prev => [...prev, sentMessage]);
     } catch (error) { alert("Media jo'natishda xatolik!"); }
@@ -645,9 +595,8 @@ function App() {
             const arrayBuffer = await audioBlob.arrayBuffer();
             const buffer = Buffer.from(arrayBuffer);
             const file = new File([buffer], "voice.ogg", { type: mimeType });
-            let tgClient = await initClient();
-            const uploadedFile = await tgClient.uploadFile({ file: file, workers: 1 });
-            const sentMessage = await tgClient.sendMessage(activeChat.entity, { file: uploadedFile, voiceNote: true, replyTo: replyingTo ? replyingTo.id : undefined });
+            const uploadedFile = await client.uploadFile({ file: file, workers: 1 });
+            const sentMessage = await client.sendMessage(activeChat.entity, { file: uploadedFile, voiceNote: true, replyTo: replyingTo ? replyingTo.id : undefined });
             setReplyingTo(null);
             setMessages(prev => [...prev, sentMessage]);
           } catch (error) { alert("Ovozli xabar jo'natilmadi."); }
@@ -661,43 +610,42 @@ function App() {
 
   const handleProfilePhotoUpload = async (event) => {
     const file = event.target.files[0];
-    if (!file) return;
+    if (!file || !client) return;
     setUploadingPhoto(true);
     try {
-      let tgClient = await initClient();
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
       const cleanFile = new File([buffer], file.name, { type: file.type });
-      const uploadedFile = await tgClient.uploadFile({ file: cleanFile, workers: 1 });
-      await tgClient.invoke(new Api.photos.UploadProfilePhoto({ file: uploadedFile }));
+      const uploadedFile = await client.uploadFile({ file: cleanFile, workers: 1 });
+      await client.invoke(new Api.photos.UploadProfilePhoto({ file: uploadedFile }));
       alert("Profil rasmingiz yangilandi!");
-      const me = await tgClient.getMe();
-      const photoBuffer = await tgClient.downloadProfilePhoto(me);
+      const me = await client.getMe();
+      const photoBuffer = await client.downloadProfilePhoto(me);
       if (photoBuffer && photoBuffer.length > 0) setMyPhotoUrl(URL.createObjectURL(new Blob([photoBuffer], { type: 'image/jpeg' })));
     } catch (error) { alert("Rasm yuklashda xato!"); } 
     finally { setUploadingPhoto(false); }
   };
 
   const handleSaveBio = async () => {
+    if (!client) return;
     try {
-      let tgClient = await initClient();
-      await tgClient.invoke(new Api.account.UpdateProfile({ about: editBioText }));
+      await client.invoke(new Api.account.UpdateProfile({ about: editBioText }));
       setCurrentUserFull(prev => ({ ...prev, fullUser: { ...prev.fullUser, about: editBioText } }));
       setIsEditingBio(false);
     } catch (e) { alert("Tarjimai holni saqlashda xatolik!"); }
   };
 
   const handleSaveUsername = async () => {
+    if (!client) return;
     try {
-      let tgClient = await initClient();
-      await tgClient.invoke(new Api.account.UpdateUsername({ username: editUsernameText }));
+      await client.invoke(new Api.account.UpdateUsername({ username: editUsernameText }));
       setCurrentUser(prev => ({ ...prev, username: editUsernameText }));
       setIsEditingUsername(false);
     } catch (e) { alert("Username saqlashda xatolik! Ehtimol band yoki noto'g'ri."); }
   };
 
   const handleOpenUserProfile = async (targetEntity, fallbackTitle) => {
-    if (!targetEntity) return;
+    if (!targetEntity || !client) return;
     setViewProfileModal(true);
     
     const idStr = targetEntity.id ? targetEntity.id.toString() : null;
@@ -718,47 +666,44 @@ function App() {
     
     setViewProfileLoading(true);
     try {
-      let tgClient = await initClient();
       let photosUrls = [...initialPhotos];
-      
       if (targetEntity.className === 'User' || targetEntity.isUser) {
-        const photos = await tgClient.invoke(new Api.photos.GetUserPhotos({ userId: targetEntity, offset: 0, maxId: 0, limit: 10 }));
+        const photos = await client.invoke(new Api.photos.GetUserPhotos({ userId: targetEntity, offset: 0, maxId: 0, limit: 10 }));
         if(photos && photos.photos) {
            photosUrls = []; 
            for(let photo of photos.photos) {
-             const buffer = await tgClient.downloadMedia(photo);
+             const buffer = await client.downloadMedia(photo);
              if(buffer && buffer.length > 0) photosUrls.push(URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' })));
            }
         }
       } else {
-        const buffer = await tgClient.downloadProfilePhoto(targetEntity);
+        const buffer = await client.downloadProfilePhoto(targetEntity);
         if (buffer && buffer.length > 0) {
            photosUrls = [URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' }))];
         }
       }
 
       let fullInfo = null;
-      if (targetEntity.className === 'User' || targetEntity.isUser) fullInfo = await tgClient.invoke(new Api.users.GetFullUser({ id: targetEntity }));
-      else if (targetEntity.className === 'Channel' || targetEntity.isChannel || targetEntity.isGroup) fullInfo = await tgClient.invoke(new Api.channels.GetFullChannel({ channel: targetEntity }));
+      if (targetEntity.className === 'User' || targetEntity.isUser) fullInfo = await client.invoke(new Api.users.GetFullUser({ id: targetEntity }));
+      else if (targetEntity.className === 'Channel' || targetEntity.isChannel || targetEntity.isGroup) fullInfo = await client.invoke(new Api.channels.GetFullChannel({ channel: targetEntity }));
       
       setViewProfileData(prev => ({ ...prev, photos: photosUrls, full: fullInfo }));
-    } catch (error) { console.error(error); }
+    } catch (error) {}
     setViewProfileLoading(false);
   };
 
   const openStoryViewer = async (peerStory, chatTitle) => {
+    if (!client) return;
     setActiveStory({ peerStory, chatTitle });
     setStoryMedia(null);
     setStoryProgress(0);
     setIsStoryLoading(true);
     try {
-      let tgClient = await initClient();
       const item = peerStory.items[peerStory.items.length - 1]; 
-      
       let buffer = null;
-      try { buffer = await tgClient.downloadMedia(item); } catch (e) {}
+      try { buffer = await client.downloadMedia(item); } catch (e) {}
       if ((!buffer || buffer.length === 0) && item.media) {
-         try { buffer = await tgClient.downloadMedia(item.media); } catch (e) {}
+         try { buffer = await client.downloadMedia(item.media); } catch (e) {}
       }
 
       if (buffer && buffer.length > 0) {
@@ -819,8 +764,8 @@ function App() {
 
         {step === 1 && loginMode === 'bot' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '300px' }}>
-            <p style={{ textAlign: 'center', margin: '0 0 10px 0', fontSize: '13px', color: '#555' }}>BotFather'dan olingan tokenni kiriting. Siz bot nomidan xabar yozishingiz mumkin!</p>
-            <input type="text" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" value={botToken} onChange={(e) => setBotToken(e.target.value)} style={{ padding: '12px', fontSize: '14px', color: 'black', borderRadius: '8px', border: '1px solid #ccc' }} />
+            <p style={{ textAlign: 'center', margin: '0 0 10px 0', fontSize: '13px', color: '#555' }}>BotFather'dan olingan tokenni kiriting.</p>
+            <input type="text" placeholder="123456:ABC-DEF..." value={botToken} onChange={(e) => setBotToken(e.target.value)} style={{ padding: '12px', fontSize: '14px', color: 'black', borderRadius: '8px', border: '1px solid #ccc' }} />
             <button onClick={handleBotLogin} style={{ padding: '12px', cursor: 'pointer', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>Bot sifatida kirish</button>
           </div>
         )}
@@ -1058,7 +1003,6 @@ function App() {
             <div style={{ flex: 1, overflowY: 'auto', backgroundColor: theme.panelBg }}>
               {loadingChats && <div style={{ padding: '20px', textAlign: 'center', color: theme.textMuted }}>Yuklanmoqda...</div>}
               
-              {/* YANGI: Botlarga qo'llanma */}
               {chats.length === 0 && !loadingChats && currentUser?.bot && (
                 <div style={{ padding: '20px', textAlign: 'center', color: theme.textMuted, fontSize: '14px' }}>
                    🤖 Siz Bot panelidasiz. Chatlar bu yerda kimdir sizga yozgandagina paydo bo'ladi.
