@@ -137,7 +137,7 @@ function App() {
   const [phoneCode, setPhoneCode] = useState('');
   const [phoneCodeHash, setPhoneCodeHash] = useState('');
   const [password, setPassword] = useState(''); 
-  const [botToken, setBotToken] = useState(''); // Bot token uchun state
+  const [botToken, setBotToken] = useState(''); 
   
   const [client, setClient] = useState(null);
   const [step, setStep] = useState(1); 
@@ -245,6 +245,21 @@ function App() {
     setIsGhostMode(newGhost);
     isGhostModeRef.current = newGhost;
     localStorage.setItem("squarix_ghost", newGhost ? "true" : "false");
+  };
+
+  // YANGI: Akkauntdan to'liq chiqish va yangi kiritish
+  const handleLogout = async () => {
+    const confirmLogout = window.confirm("Haqiqatan ham akkauntdan chiqmoqchimisiz? (Boshqa akkaunt qo'shish uchun)");
+    if (!confirmLogout) return;
+    
+    try {
+      if (client) {
+         await client.invoke(new Api.auth.LogOut());
+      }
+    } catch (e) { console.log(e); }
+    
+    localStorage.removeItem("squarix_session");
+    window.location.reload(); 
   };
 
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
@@ -385,6 +400,8 @@ function App() {
     setLoadingChats(true);
     try {
       const me = await tgClient.getMe();
+      
+      // Agar kiritilgan bo'lsa (Auth muvaffaqiyatli)
       setCurrentUser(me);
       const fullMe = await tgClient.invoke(new Api.users.GetFullUser({ id: me.id }));
       setCurrentUserFull(fullMe);
@@ -403,7 +420,13 @@ function App() {
         }
       } catch (err) { console.log("Story yuklashda xatolik (Yoki bu bot akkaunti)"); }
       
-    } catch (error) { console.error(error); }
+    } catch (error) { 
+      // YANGI: Agar sessiya Telegramdan uzilgan bo'lsa (Terminate qilingan bo'lsa) tutib olish
+      console.error("fetchInitialData xatosi (Sessiya o'lgan):", error);
+      alert("Sessiya yaroqsiz yoki boshqa qurilmadan o'chirilgan! Iltimos, qaytadan kiring.");
+      localStorage.removeItem("squarix_session");
+      window.location.reload(); 
+    }
     setLoadingChats(false);
   };
 
@@ -448,7 +471,6 @@ function App() {
     }
   };
 
-  // YANGI: Bot token orqali kirish
   const handleBotLogin = async () => {
     if (!botToken) return;
     try {
@@ -747,7 +769,6 @@ function App() {
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '50px', fontFamily: 'sans-serif' }}>
         <h1>Squarix Web 🚀</h1>
         
-        {/* LOGIN MODE TOGGLE */}
         {step === 1 && (
           <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', backgroundColor: '#f0f2f5', padding: '5px', borderRadius: '10px' }}>
              <button onClick={() => setLoginMode('user')} style={{ padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', backgroundColor: loginMode === 'user' ? '#0088cc' : 'transparent', color: loginMode === 'user' ? 'white' : '#555', fontWeight: 'bold', transition: '0.3s' }}>👤 Shaxsiy Akkaunt</button>
@@ -947,9 +968,12 @@ function App() {
                 )}
               </div>
             </div>
-            <div style={{ padding: '20px' }}>
+            <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
               <input type="file" id="profilePic" accept="image/*" style={{ display: 'none' }} onChange={handleProfilePhotoUpload} />
               <label htmlFor="profilePic" style={{ display: 'block', width: '100%', padding: '12px', backgroundColor: '#28a745', color: 'white', borderRadius: '8px', cursor: 'pointer', textAlign: 'center', fontSize: '15px', fontWeight: 'bold' }}>Rasmni o'zgartirish 📷</label>
+              
+              {/* YANGI: Akkauntdan chiqish tugmasi */}
+              <button onClick={handleLogout} style={{ width: '100%', padding: '12px', backgroundColor: '#dc3545', color: 'white', borderRadius: '8px', cursor: 'pointer', border: 'none', fontSize: '15px', fontWeight: 'bold' }}>Akkauntdan chiqish 🚪</button>
             </div>
           </div>
         ) : (
