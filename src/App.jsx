@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions';
-import { NewMessage, Raw } from 'telegram/events'; // DeletedMessage o'rniga universal Raw qo'shildi
+import { NewMessage, Raw } from 'telegram/events';
 import { Buffer } from 'buffer';
 
 const apiId = 3855698;
@@ -132,10 +132,12 @@ const MessageItem = ({ msg, client, activeChat, theme, onMessageClick, getReplie
 };
 
 function App() {
+  const [loginMode, setLoginMode] = useState('user'); // 'user' yoki 'bot'
   const [phoneNumber, setPhoneNumber] = useState('');
   const [phoneCode, setPhoneCode] = useState('');
   const [phoneCodeHash, setPhoneCodeHash] = useState('');
   const [password, setPassword] = useState(''); 
+  const [botToken, setBotToken] = useState(''); // Bot token uchun state
   
   const [client, setClient] = useState(null);
   const [step, setStep] = useState(1); 
@@ -265,7 +267,6 @@ function App() {
   useEffect(() => {
     if (!client) return;
     
-    // YENGI XABARLARNI TUTIB OLISH
     const handleNewMessage = async (event) => {
       const message = event.message;
       const currentChat = activeChatRef.current;
@@ -306,9 +307,7 @@ function App() {
       }
     };
 
-    // YANGILANGAN VA ENG KUCHLI "ANTI-DELETE" (Raw orqali tutib olish)
     const handleRawEvent = (event) => {
-       // Telegram o'chirilgan xabarlarni ikki xil eventda jo'natadi
        if (event.className === 'UpdateDeleteMessages' || event.className === 'UpdateDeleteChannelMessages') {
            const deletedIds = event.messages;
            if (!deletedIds || deletedIds.length === 0) return;
@@ -330,7 +329,6 @@ function App() {
     };
 
     client.addEventHandler(handleNewMessage, new NewMessage({ incoming: true, outgoing: true }));
-    // Raw eventini ulaymiz (bu to'g'ridan to'g'ri API dagi o'zgarishlarni eshitadi)
     client.addEventHandler(handleRawEvent, new Raw({})); 
 
     return () => {
@@ -403,7 +401,7 @@ function App() {
         if (storiesResult && storiesResult.peerStories) {
           setStories(storiesResult.peerStories);
         }
-      } catch (err) { console.log("Story yuklashda xatolik"); }
+      } catch (err) { console.log("Story yuklashda xatolik (Yoki bu bot akkaunti)"); }
       
     } catch (error) { console.error(error); }
     setLoadingChats(false);
@@ -447,6 +445,28 @@ function App() {
        fetchInitialData(tgClient);
     } catch (error) {
        alert("Parol noto'g'ri yoki xatolik: " + error.message);
+    }
+  };
+
+  // YANGI: Bot token orqali kirish
+  const handleBotLogin = async () => {
+    if (!botToken) return;
+    try {
+      const tgClient = await initClient();
+      if (!tgClient) return;
+      
+      await tgClient.invoke(new Api.auth.ImportBotAuthorization({
+        flags: 0,
+        apiId: apiId,
+        apiHash: apiHash,
+        botAuthToken: botToken
+      }));
+
+      localStorage.setItem("squarix_session", tgClient.session.save());
+      setStep(4);
+      fetchInitialData(tgClient);
+    } catch (error) {
+      alert("Bot token noto'g'ri yoki xatolik: " + error.message);
     }
   };
 
@@ -724,25 +744,44 @@ function App() {
 
   if (step < 4) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '100px', fontFamily: 'sans-serif' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '50px', fontFamily: 'sans-serif' }}>
         <h1>Squarix Web 🚀</h1>
+        
+        {/* LOGIN MODE TOGGLE */}
         {step === 1 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <input type="text" placeholder="+998..." value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} style={{ padding: '10px', fontSize: '16px', color: 'black' }} />
-            <button onClick={sendCode} style={{ padding: '10px', cursor: 'pointer', backgroundColor: '#0088cc', color: 'white', border: 'none', borderRadius: '5px' }}>Kodni olish</button>
+          <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', backgroundColor: '#f0f2f5', padding: '5px', borderRadius: '10px' }}>
+             <button onClick={() => setLoginMode('user')} style={{ padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', backgroundColor: loginMode === 'user' ? '#0088cc' : 'transparent', color: loginMode === 'user' ? 'white' : '#555', fontWeight: 'bold', transition: '0.3s' }}>👤 Shaxsiy Akkaunt</button>
+             <button onClick={() => setLoginMode('bot')} style={{ padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', backgroundColor: loginMode === 'bot' ? '#0088cc' : 'transparent', color: loginMode === 'bot' ? 'white' : '#555', fontWeight: 'bold', transition: '0.3s' }}>🤖 Bot Token</button>
           </div>
         )}
+
+        {step === 1 && loginMode === 'user' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '300px' }}>
+            <input type="text" placeholder="+998..." value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} style={{ padding: '12px', fontSize: '16px', color: 'black', borderRadius: '8px', border: '1px solid #ccc' }} />
+            <button onClick={sendCode} style={{ padding: '12px', cursor: 'pointer', backgroundColor: '#0088cc', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>Kodni olish</button>
+          </div>
+        )}
+
+        {step === 1 && loginMode === 'bot' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '300px' }}>
+            <p style={{ textAlign: 'center', margin: '0 0 10px 0', fontSize: '13px', color: '#555' }}>BotFather'dan olingan tokenni kiriting. Siz bot nomidan xabar yozishingiz mumkin!</p>
+            <input type="text" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" value={botToken} onChange={(e) => setBotToken(e.target.value)} style={{ padding: '12px', fontSize: '14px', color: 'black', borderRadius: '8px', border: '1px solid #ccc' }} />
+            <button onClick={handleBotLogin} style={{ padding: '12px', cursor: 'pointer', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>Bot sifatida kirish</button>
+          </div>
+        )}
+
         {step === 2 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <input type="text" placeholder="Kod..." value={phoneCode} onChange={(e) => setPhoneCode(e.target.value)} style={{ padding: '10px', fontSize: '16px', color: 'black' }} />
-            <button onClick={verifyCode} style={{ padding: '10px', cursor: 'pointer', backgroundColor: '#28a745', color: '#fff', border: 'none', borderRadius: '5px' }}>Kirish</button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '300px' }}>
+            <input type="text" placeholder="Kod..." value={phoneCode} onChange={(e) => setPhoneCode(e.target.value)} style={{ padding: '12px', fontSize: '16px', color: 'black', borderRadius: '8px', border: '1px solid #ccc' }} />
+            <button onClick={verifyCode} style={{ padding: '12px', cursor: 'pointer', backgroundColor: '#28a745', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>Kirish</button>
           </div>
         )}
+
         {step === 3 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center', width: '300px' }}>
             <p style={{ color: 'black', textAlign: 'center', fontWeight: 'bold' }}>Sizning hisobingiz 2-bosqichli parol bilan himoyalangan 🔒</p>
-            <input type="password" placeholder="Parol..." value={password} onChange={(e) => setPassword(e.target.value)} style={{ padding: '10px', fontSize: '16px', color: 'black', width: '100%' }} />
-            <button onClick={verifyPassword} style={{ padding: '10px', cursor: 'pointer', backgroundColor: '#0088cc', color: '#fff', width: '100%', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}>Tastiqlash</button>
+            <input type="password" placeholder="Parol..." value={password} onChange={(e) => setPassword(e.target.value)} style={{ padding: '12px', fontSize: '16px', color: 'black', width: '100%', borderRadius: '8px', border: '1px solid #ccc' }} />
+            <button onClick={verifyPassword} style={{ padding: '12px', cursor: 'pointer', backgroundColor: '#0088cc', color: '#fff', width: '100%', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>Tastiqlash</button>
           </div>
         )}
       </div>
