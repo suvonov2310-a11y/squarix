@@ -12,8 +12,6 @@ let globalTgClient = null;
 const EMOJIS = [
   '😀','😃','😄','😁','😆','😅','😂','🤣','🥲','☺️','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😗',
   '😙','😚','😋','😛','😝','😜','🤪','🤨','🧐','🤓','😎','🥸','🤩','🥳','😏','😒','😞','😔','😟','😕',
-  '🙁','☹️','😣','😖','😫','😩','🥺','😢','😭','😤','😠','😡','🤬','🤯','😳','🥵','🥶','😱','😨','😰',
-  '😥','😓','🤗','🤔','🤭','🤫','🤥','😶','😐','😑','😬','🙄','😯','😦','😧','😮','😲','🥱','😴','🤤',
   '❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❤️‍🔥','❤️‍🩹','👍','👎','👏','🙌','👐','🤲','🤝','🙏'
 ];
 
@@ -38,13 +36,15 @@ const LazyAvatar = ({ client, entity, size = 45, fallbackText, style }) => {
          setImgUrl(globalAvatarCache.get(idStr));
          return;
       }
-      client.downloadProfilePhoto(entity).then(buffer => {
-        if (buffer && buffer.length > 0 && isMounted) {
-          const url = URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' }));
-          if (idStr) globalAvatarCache.set(idStr, url);
-          setImgUrl(url);
-        } else if (isMounted) { setHasError(true); }
-      }).catch(() => { if (isMounted) setHasError(true); });
+      try {
+        client.downloadProfilePhoto(entity).then(buffer => {
+          if (buffer && buffer.length > 0 && isMounted) {
+            const url = URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' }));
+            if (idStr) globalAvatarCache.set(idStr, url);
+            setImgUrl(url);
+          } else if (isMounted) { setHasError(true); }
+        }).catch(() => { if (isMounted) setHasError(true); });
+      } catch(e) { if (isMounted) setHasError(true); }
     } else { setHasError(true); }
     return () => { isMounted = false; };
   }, [client, entity]);
@@ -69,9 +69,11 @@ const MessageItem = ({ msg, client, activeChat, theme, onMessageClick, getReplie
   useEffect(() => {
     let isMounted = true;
     if (msg.media && msg.media.photo) {
-      client.downloadMedia(msg).then(buffer => {
-        if (buffer && buffer.length > 0 && isMounted) setMediaUrl(URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' })));
-      }).catch(() => {});
+      try {
+        client.downloadMedia(msg).then(buffer => {
+          if (buffer && buffer.length > 0 && isMounted) setMediaUrl(URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' })));
+        }).catch(() => {});
+      } catch(e) {}
     }
     return () => { isMounted = false; };
   }, [msg, client]);
@@ -149,6 +151,7 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [replyingTo, setReplyingTo] = useState(null);
+  const [searchQuery, setSearchQuery] = useState(''); // YANGI: Qidiruv uchun!
 
   const [currentUser, setCurrentUser] = useState(null);
   const [myPhotoUrl, setMyPhotoUrl] = useState('');
@@ -223,11 +226,16 @@ function App() {
     }
   }, []);
 
-  // Botning yozishmalarini uning ID siga qarab saqlaymiz (Har bir botning o'z oynasi bo'ladi)
+  // YANGILANGAN BOT KESHI: Odamlarning Ismi va Access Hash saqlanadi!
   useEffect(() => {
     if (currentUser && currentUser.bot && chats.length > 0) {
-      const botChatIds = chats.map(c => c.id.toString());
-      localStorage.setItem(`squarix_bot_chats_${currentUser.id}`, JSON.stringify(botChatIds));
+      const botChatsToSave = chats.map(c => ({
+          id: c.id.toString(),
+          title: c.title,
+          accessHash: c.entity?.accessHash?.toString() || null,
+          className: c.entity?.className || 'User'
+      }));
+      localStorage.setItem(`squarix_bot_chats_${currentUser.id}`, JSON.stringify(botChatsToSave));
     }
   }, [chats, currentUser]);
 
@@ -257,19 +265,18 @@ function App() {
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // JONLI EFIR (REAL-TIME XABARLAR)
+  // XABARLARNI YANADA QATTIQROQ USHLASH
   useEffect(() => {
     if (!client) return;
     
     const handleNewMessage = async (event) => {
       const message = event.message;
-      const currentChat = activeChatRef.current;
-      
-      // Xabar kimdan yoki qayerdan kelganini aniqlash
+      if (!message) return;
+
       const peerIdObj = message.peerId;
-      if (!peerIdObj) return;
+      if (!peerIdObj && !message.chatId) return;
       
-      const peerId = peerIdObj.userId || peerIdObj.channelId || peerIdObj.chatId || message.chatId;
+      const peerId = message.chatId || peerIdObj.userId || peerIdObj.channelId || peerIdObj.chatId;
       const chatIdStr = String(peerId).replace('-100', '');
       
       let isNewChat = false;
@@ -279,7 +286,7 @@ function App() {
         if (chatIndex > -1) {
           const newChats = [...prevChats];
           const chatToUpdate = { ...newChats[chatIndex], message: message };
-          if (!message.out && String(chatToUpdate.id).replace('-100','') !== String(currentChat?.id).replace('-100','')) {
+          if (!message.out && String(chatToUpdate.id).replace('-100','') !== String(activeChatRef.current?.id).replace('-100','')) {
             chatToUpdate.dialog = { ...chatToUpdate.dialog, unreadCount: (chatToUpdate.dialog?.unreadCount || 0) + 1 };
           }
           newChats.splice(chatIndex, 1);
@@ -291,35 +298,31 @@ function App() {
         }
       });
 
-      // Agar chat ro'yxatda yo'q bo'lsa (yangi mijoz yozsa yoki bot birinchi marta javob qaytarsa)
       if (isNewChat) {
          try {
-            // Entitini olishga harakat qilamiz
             let entity = message.sender || message.chat;
             if (!entity) {
                 try { entity = await client.getEntity(peerId); } catch(e) {}
             }
             
-            if (entity) {
-                const newChat = {
-                   id: peerId,
-                   entity: entity,
-                   title: entity.title || entity.firstName || "Foydalanuvchi",
-                   isUser: entity.className === 'User',
-                   isGroup: entity.className === 'Chat' || entity.megagroup,
-                   isChannel: entity.className === 'Channel' && !entity.megagroup,
-                   dialog: { unreadCount: message.out ? 0 : 1 },
-                   message: message
-                };
-                setChats(prev => {
-                   if (prev.some(c => String(c.id).replace('-100','') === chatIdStr)) return prev;
-                   return [newChat, ...prev];
-                });
-            }
+            const newChat = {
+               id: peerId,
+               entity: entity || { id: peerId, className: 'User' },
+               title: entity?.title || entity?.firstName || entity?.username || `ID: ${chatIdStr}`,
+               isUser: entity?.className === 'User' || true,
+               isGroup: entity?.className === 'Chat' || entity?.megagroup || false,
+               isChannel: entity?.className === 'Channel' && !entity?.megagroup,
+               dialog: { unreadCount: message.out ? 0 : 1 },
+               message: message
+            };
+            setChats(prev => {
+               if (prev.some(c => String(c.id).replace('-100','') === chatIdStr)) return prev;
+               return [newChat, ...prev];
+            });
          } catch (e) { console.log("Entity olishda xato:", e); }
       }
 
-      // Agar foydalanuvchi aynan shu chatda bo'lsa
+      const currentChat = activeChatRef.current;
       if (currentChat && chatIdStr === String(currentChat.id).replace('-100', '')) {
           setMessages(prev => {
             if (prev.some(m => m.id === message.id)) return prev;
@@ -331,10 +334,10 @@ function App() {
       }
     };
 
-    client.addEventHandler(handleNewMessage, new NewMessage({ incoming: true, outgoing: true }));
+    client.addEventHandler(handleNewMessage, new NewMessage({})); // Barcha xabarlarni tutadi
 
     return () => {
-      client.removeEventHandler(handleNewMessage, new NewMessage({ incoming: true, outgoing: true }));
+      client.removeEventHandler(handleNewMessage, new NewMessage({}));
     }
   }, [client, currentUser]);
 
@@ -353,36 +356,37 @@ function App() {
       } catch (e) {}
       
       if (!me.bot) {
-         // Oddiy raqam uchun tarixni tortib kelish
          const dialogs = await tgClient.getDialogs({ limit: 100 }); 
          setChats(dialogs);
       } else {
-         // BOT UCHUN: Faqat shu botga tegishli keshni o'qiymiz
+         // KESHDAN XAVFSIZ YUKLASH (Botlar o'z odamlarini eslab qolishi uchun)
          const cachedBotChats = localStorage.getItem(`squarix_bot_chats_${me.id}`);
          if (cachedBotChats) {
-            const parsedIds = JSON.parse(cachedBotChats);
-            const restoredChats = [];
-            for (let id of parsedIds) {
-                try {
-                    const entity = await tgClient.getEntity(id);
-                    const msgs = await tgClient.getMessages(entity, { limit: 1 });
-                    const lastMsg = msgs.length > 0 ? msgs[0] : null;
-
-                    restoredChats.push({
-                        id: entity.id,
-                        entity: entity,
-                        title: entity.title || entity.firstName || "Chat",
-                        isUser: entity.className === 'User',
-                        isGroup: entity.className === 'Chat' || entity.megagroup,
-                        isChannel: entity.className === 'Channel' && !entity.megagroup,
-                        dialog: { unreadCount: 0 },
-                        message: lastMsg
-                    });
-                } catch (e) {}
-            }
+            const parsedData = JSON.parse(cachedBotChats);
+            const restoredChats = parsedData.map(data => ({
+                id: data.id,
+                entity: { id: data.id, accessHash: data.accessHash, className: data.className },
+                title: data.title || "Foydalanuvchi",
+                isUser: data.className === 'User',
+                isGroup: data.className === 'Chat',
+                isChannel: data.className === 'Channel',
+                dialog: { unreadCount: 0 },
+                message: null
+            }));
             setChats(restoredChats);
+
+            // Eski xabarni fonda yuklab qo'yish
+            restoredChats.forEach(async (chat) => {
+               try {
+                   if(chat.entity.accessHash) {
+                       const msgs = await tgClient.getMessages(chat.entity, { limit: 1 });
+                       if(msgs.length > 0) {
+                           setChats(prev => prev.map(c => c.id === chat.id ? { ...c, message: msgs[0] } : c));
+                       }
+                   }
+               } catch(e) {}
+            });
          } else { 
-            // Agar yangi bot kiritilsa - TOZA OYNA!
             setChats([]); 
          }
       }
@@ -472,17 +476,46 @@ function App() {
     } catch (error) {}
   };
 
+  // YANGI: ID yoki Username orqali qidirish va yozish
+  const handleSearch = async () => {
+    if (!searchQuery.trim() || !client) return;
+    setLoadingChats(true);
+    try {
+       const entity = await client.getEntity(searchQuery.trim());
+       const newChat = {
+          id: entity.id,
+          entity: entity,
+          title: entity.title || entity.firstName || entity.username || searchQuery,
+          isUser: entity.className === 'User',
+          isGroup: entity.className === 'Chat' || entity.megagroup,
+          isChannel: entity.className === 'Channel' && !entity.megagroup,
+          dialog: { unreadCount: 0 },
+          message: null
+       };
+       setChats(prev => {
+          if (prev.some(c => String(c.id).replace('-100', '') === String(entity.id).replace('-100', ''))) return prev;
+          return [newChat, ...prev];
+       });
+       setSearchQuery('');
+       openChat(newChat);
+    } catch (e) {
+       alert("Topilmadi yoki bu odamga yozishga ruxsat yo'q (Botlar faqat oldin yozgan odamgagina yozadi).");
+    }
+    setLoadingChats(false);
+  };
+
   const sendMessage = async () => {
     if (!newMessage.trim() || !activeChat || !client) return;
     const textToSend = newMessage;
     setNewMessage('');
     setShowEmojiPicker(false);
     try {
-      // Botlar faqat user orqali (id orqali yozishi uchun entity ni ishlatamiz)
       const sentMessage = await client.sendMessage(activeChat.entity, { message: textToSend, replyTo: replyingTo ? replyingTo.id : undefined });
       setReplyingTo(null); 
       setMessages(prev => [...prev, sentMessage]);
-    } catch (error) { alert("Xabarni yuborib bo'lmadi! (Bot faqat unga yozganlargagina yoza oladi)"); }
+    } catch (error) { 
+      alert("Xabarni yuborib bo'lmadi! Telegram bot qoidasi: Bot faqat o'ziga yozgan odamlarga yozishi mumkin yoki chat ro'yxatda yangilanmagan."); 
+    }
   };
 
   const handleMediaUpload = async (event) => {
@@ -532,15 +565,19 @@ function App() {
         if(photos && photos.photos) {
            photosUrls = []; 
            for(let photo of photos.photos) {
-             const buffer = await client.downloadMedia(photo);
-             if(buffer && buffer.length > 0) photosUrls.push(URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' })));
+             try {
+               const buffer = await client.downloadMedia(photo);
+               if(buffer && buffer.length > 0) photosUrls.push(URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' })));
+             } catch(e){}
            }
         }
       } else {
-        const buffer = await client.downloadProfilePhoto(targetEntity);
-        if (buffer && buffer.length > 0) {
-           photosUrls = [URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' }))];
-        }
+        try {
+          const buffer = await client.downloadProfilePhoto(targetEntity);
+          if (buffer && buffer.length > 0) {
+             photosUrls = [URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' }))];
+          }
+        } catch(e){}
       }
 
       let fullInfo = null;
@@ -570,13 +607,10 @@ function App() {
   if (step < 4) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', width: '100vw', margin: '-8px', backgroundColor: '#e9ecef', fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" }}>
-        
         <div style={{ backgroundColor: 'white', padding: '40px', borderRadius: '20px', boxShadow: '0 10px 30px rgba(0,0,0,0.1)', width: '350px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          
           <div style={{ width: '80px', height: '80px', backgroundColor: '#0088cc', borderRadius: '50%', display: 'flex', justifyContent: 'center', alignItems: 'center', marginBottom: '15px', boxShadow: '0 5px 15px rgba(0, 136, 204, 0.4)' }}>
              <span style={{ color: 'white', fontSize: '35px', fontWeight: 'bold' }}>S</span>
           </div>
-          
           <h1 style={{ margin: '0 0 5px 0', fontSize: '24px', color: '#333' }}>Squarix Web</h1>
           <p style={{ margin: '0 0 25px 0', fontSize: '14px', color: '#777', textAlign: 'center' }}>Telegram tizimiga ulanish</p>
 
@@ -610,28 +644,21 @@ function App() {
               )}
             </>
           )}
-
           {step === 2 && (
             <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '15px' }}>
               <p style={{ textAlign: 'center', fontSize: '14px', color: '#555', margin: 0 }}>Telegramdan kelgan kodni kiriting</p>
               <input type="text" placeholder="12345" value={phoneCode} onChange={(e) => setPhoneCode(e.target.value)} style={{ padding: '14px', fontSize: '20px', letterSpacing: '5px', textAlign: 'center', color: '#333', borderRadius: '10px', border: '1px solid #0088cc', outline: 'none' }} />
-              <button onClick={verifyCode} disabled={isLoading || !phoneCode} style={{ padding: '14px', cursor: isLoading ? 'wait' : 'pointer', backgroundColor: isLoading ? '#ccc' : '#0088cc', color: 'white', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '16px' }}>
-                 {isLoading ? "Tekshirilmoqda..." : "Kirish"}
-              </button>
+              <button onClick={verifyCode} disabled={isLoading || !phoneCode} style={{ padding: '14px', cursor: isLoading ? 'wait' : 'pointer', backgroundColor: isLoading ? '#ccc' : '#0088cc', color: 'white', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '16px' }}>{isLoading ? "Tekshirilmoqda..." : "Kirish"}</button>
               <button onClick={() => setStep(1)} style={{ background: 'none', border: 'none', color: '#0088cc', cursor: 'pointer', fontSize: '13px', marginTop: '5px' }}>Ortga qaytish</button>
             </div>
           )}
-
           {step === 3 && (
             <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '15px' }}>
               <p style={{ textAlign: 'center', fontSize: '14px', color: '#555', margin: 0 }}>2-bosqichli parol (2FA) o'rnatilgan</p>
               <input type="password" placeholder="Parol..." value={password} onChange={(e) => setPassword(e.target.value)} style={{ padding: '14px', fontSize: '16px', color: '#333', borderRadius: '10px', border: '1px solid #0088cc', outline: 'none' }} />
-              <button onClick={verifyPassword} disabled={isLoading || !password} style={{ padding: '14px', cursor: isLoading ? 'wait' : 'pointer', backgroundColor: isLoading ? '#ccc' : '#0088cc', color: 'white', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '16px' }}>
-                 {isLoading ? "Tekshirilmoqda..." : "Tasdiqlash"}
-              </button>
+              <button onClick={verifyPassword} disabled={isLoading || !password} style={{ padding: '14px', cursor: isLoading ? 'wait' : 'pointer', backgroundColor: isLoading ? '#ccc' : '#0088cc', color: 'white', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '16px' }}>{isLoading ? "Tekshirilmoqda..." : "Tasdiqlash"}</button>
             </div>
           )}
-
         </div>
       </div>
     );
@@ -714,7 +741,6 @@ function App() {
               <button onClick={handleLogout} style={{ width: '100%', padding: '14px', backgroundColor: '#dc3545', color: 'white', borderRadius: '10px', cursor: 'pointer', border: 'none', fontSize: '15px', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px', transition: '0.2s', boxShadow: '0 2px 5px rgba(220, 53, 69, 0.3)' }}>
                  Boshqa akkauntga kirish / Chiqish 🚪
               </button>
-              <p style={{ fontSize: '12px', color: theme.textMuted, textAlign: 'center', margin: '-5px 0 0 0' }}>Boshqa raqam yoki bot token qo'shish uchun avval joriy akkauntdan chiqishingiz kerak.</p>
             </div>
           </div>
         ) : (
@@ -739,14 +765,27 @@ function App() {
               ))}
             </div>
             
+            {/* YANGI QIDIRUV PANELLI (Majoziy xotirani qutqaruvchi) */}
+            <div style={{ padding: '10px', display: 'flex', gap: '8px', backgroundColor: theme.panelBg, borderBottom: `1px solid ${theme.border}` }}>
+              <input 
+                 type="text" 
+                 placeholder="ID yoki @username qidirish..." 
+                 value={searchQuery} 
+                 onChange={e => setSearchQuery(e.target.value)} 
+                 onKeyDown={e => { if (e.key === 'Enter') handleSearch(); }}
+                 style={{ flex: 1, padding: '10px 12px', borderRadius: '10px', border: `1px solid ${theme.border}`, backgroundColor: theme.inputBg, color: theme.text, outline: 'none', fontSize: '14px' }} 
+              />
+              <button onClick={handleSearch} style={{ padding: '10px 15px', borderRadius: '10px', border: 'none', backgroundColor: '#0088cc', color: 'white', cursor: 'pointer', fontWeight: 'bold' }}>🔍</button>
+            </div>
+
             <div style={{ flex: 1, overflowY: 'auto', backgroundColor: theme.panelBg }}>
               {loadingChats && <div style={{ padding: '20px', textAlign: 'center', color: theme.textMuted }}>Sinxronizatsiya... ⏳</div>}
               
               {chats.length === 0 && !loadingChats && currentUser?.bot && (
                 <div style={{ padding: '30px 20px', textAlign: 'center', color: theme.textMuted, fontSize: '14px', lineHeight: '1.5' }}>
                    <span style={{fontSize: '40px', display: 'block', marginBottom: '10px'}}>🤖</span>
-                   Siz **Bot** panelidasiz. <br/><br/>
-                   Hozircha suhbatlar yo'q. Kimdir botingizga yozishi bilan yoki avtomat kodingiz kimgadir javob berishi bilan u shu yerda paydo bo'ladi.
+                   Siz **Bot** panelidasiz.<br/><br/>
+                   Agar suhbatdoshlar ko'rinmasa va serveringiz ishlashni davom ettirayotgan bo'lsa, yuqoridagi qidiruvga mijozning <b>ID</b> sini yozib "🔍" ni bosing.
                 </div>
               )}
 
@@ -797,13 +836,13 @@ function App() {
               <LazyAvatar client={client} entity={activeChat.entity} size={42} fallbackText={activeChat.title} />
               <div style={{ overflow: 'hidden' }}>
                 <h3 style={{ margin: 0, fontSize: '16px', color: theme.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{activeChat.title}</h3>
-                <span style={{ fontSize: '12px', color: theme.textMuted }}>{activeChat.entity?.bot ? "Bot" : activeChat.isGroup ? "Guruh" : activeChat.isChannel ? "Kanal" : "Foydalanuvchi"}</span>
+                <span style={{ fontSize: '12px', color: theme.textMuted }}>ID: {String(activeChat.id).replace('-100','')}</span>
               </div>
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', padding: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }} onClick={() => setShowEmojiPicker(false)}>
               <div style={{ flex: 1 }} />
-              {messages.length === 0 ? <div style={{ textAlign: 'center', marginTop: '20px', color: theme.textMuted }}>Yuklanmoqda...</div> : null}
+              {messages.length === 0 ? <div style={{ textAlign: 'center', marginTop: '20px', color: theme.textMuted }}>Suhbat bo'sh yoki yuklanmoqda...</div> : null}
               {messages.map((msg, idx) => (
                 <MessageItem 
                    key={msg.id || idx} 
@@ -823,29 +862,10 @@ function App() {
             {replyingTo && (
               <div style={{ padding: '8px 20px', backgroundColor: theme.activeChat, borderBottom: `1px solid ${theme.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ borderLeft: '3px solid #0088cc', paddingLeft: '10px', overflow: 'hidden' }}>
-                  <p style={{ margin: 0, fontSize: '12px', color: '#0088cc', fontWeight: 'bold' }}>Javob berilyapti</p>
+                  <p style={{ margin: '0', fontSize: '12px', color: '#0088cc', fontWeight: 'bold' }}>Javob berilyapti</p>
                   <p style={{ margin: '2px 0 0', fontSize: '14px', color: theme.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{replyingTo.message || "📷 Media"}</p>
                 </div>
                 <button onClick={() => setReplyingTo(null)} style={{ background: 'none', border: 'none', color: theme.textMuted, fontSize: '20px', cursor: 'pointer' }}>✕</button>
-              </div>
-            )}
-
-            {showEmojiPicker && (
-              <div style={{ position: 'absolute', bottom: '70px', left: isMobile ? '10px' : '20px', backgroundColor: theme.panelBg, width: '320px', height: '350px', borderRadius: '15px', boxShadow: '0 5px 20px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', border: `1px solid ${theme.border}`, zIndex: 100 }}>
-                <div style={{ display: 'flex', borderBottom: `1px solid ${theme.border}` }}>
-                  <button onClick={() => setEmojiMenuTab('emoji')} style={{ flex: 1, padding: '10px', background: 'none', border: 'none', borderBottom: emojiMenuTab === 'emoji' ? '3px solid #0088cc' : '3px solid transparent', color: emojiMenuTab === 'emoji' ? '#0088cc' : theme.textMuted, cursor: 'pointer', fontWeight: 'bold' }}>Emoji 😀</button>
-                  <button onClick={() => setEmojiMenuTab('sticker')} style={{ flex: 1, padding: '10px', background: 'none', border: 'none', borderBottom: emojiMenuTab === 'sticker' ? '3px solid #0088cc' : '3px solid transparent', color: emojiMenuTab === 'sticker' ? '#0088cc' : theme.textMuted, cursor: 'pointer', fontWeight: 'bold' }}>Stiker 🪧</button>
-                </div>
-                <div style={{ flex: 1, overflowY: 'auto', padding: '10px', display: 'flex', flexWrap: 'wrap', gap: '5px', alignContent: 'flex-start' }}>
-                  {emojiMenuTab === 'emoji' && EMOJIS.map((emoji, i) => (
-                    <span key={i} onClick={() => setNewMessage(prev => prev + emoji)} style={{ fontSize: '24px', cursor: 'pointer', padding: '5px', borderRadius: '5px', transition: 'background 0.2s' }} onMouseOver={e => e.currentTarget.style.backgroundColor = theme.activeChat} onMouseOut={e => e.currentTarget.style.backgroundColor = 'transparent'}>{emoji}</span>
-                  ))}
-                  {emojiMenuTab === 'sticker' && (
-                    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', color: theme.textMuted, textAlign: 'center', padding: '20px' }}>
-                      <span style={{ fontSize: '40px', marginBottom: '10px' }}>🪧</span><p>Stikerlar tez kunda!</p>
-                    </div>
-                  )}
-                </div>
               </div>
             )}
 
