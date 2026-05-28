@@ -212,7 +212,7 @@ function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Avtomatik kirish qismi (Faqat sahifa yuklanganda ishlaydi)
+  // MUHIM QISMI: Tizimga avtomatik kirish va chatlarni qayta tiklash
   useEffect(() => {
     const savedTheme = localStorage.getItem("squarix_theme");
     if (savedTheme === "dark") setIsDarkMode(true);
@@ -240,6 +240,15 @@ function App() {
     }
   }, []);
 
+  // YANGI: Botlar uchun chatlarni xotirada saqlash
+  useEffect(() => {
+    if (currentUser && currentUser.bot && chats.length > 0) {
+      // Faqat kerakli ma'lumotlarni saqlaymiz (xotira to'lib ketmasligi uchun)
+      const botChatIds = chats.map(c => c.id.toString());
+      localStorage.setItem("squarix_bot_chats", JSON.stringify(botChatIds));
+    }
+  }, [chats, currentUser]);
+
   const toggleThemeFunc = () => {
     const newTheme = !isDarkMode;
     setIsDarkMode(newTheme);
@@ -258,27 +267,14 @@ function App() {
     if (!confirmLogout) return;
     try {
       if (client) await client.invoke(new Api.auth.LogOut());
-    } catch (e) { console.log(e); }
+    } catch (e) {}
     localStorage.removeItem("squarix_session");
+    localStorage.removeItem("squarix_bot_chats");
     window.location.reload(); 
   };
 
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
-
-  useEffect(() => {
-    let timer;
-    if (storyMedia && activeStory) {
-      setStoryProgress(0);
-      timer = setInterval(() => {
-        setStoryProgress(prev => {
-          if (prev >= 100) { clearInterval(timer); closeStoryViewer(); return 100; }
-          return prev + 2; 
-        });
-      }, 100);
-    }
-    return () => clearInterval(timer);
-  }, [storyMedia, activeStory]);
 
   useEffect(() => {
     if (!client) return;
@@ -395,7 +391,8 @@ function App() {
       } catch (e) {}
       
       if (!me.bot) {
-         const dialogs = await tgClient.getDialogs({ limit: 150 }); 
+         // Oddiy foydalanuvchi
+         const dialogs = await tgClient.getDialogs({ limit: 100 }); 
          setChats(dialogs);
 
          try {
@@ -405,9 +402,37 @@ function App() {
            }
          } catch (err) {}
       } else {
-         setChats([]); // Botlar uchun bo'sh
+         // YANGI MANTIQ: Bot uchun keshni yuklash!
+         const cachedBotChats = localStorage.getItem("squarix_bot_chats");
+         if (cachedBotChats) {
+            const parsedIds = JSON.parse(cachedBotChats);
+            const restoredChats = [];
+            for (let id of parsedIds) {
+                try {
+                    const entity = await tgClient.getEntity(id);
+                    // Bot o'sha chatdagi oxirgi xabarni oladi
+                    const msgs = await tgClient.getMessages(entity, { limit: 1 });
+                    const lastMsg = msgs.length > 0 ? msgs[0] : null;
+
+                    restoredChats.push({
+                        id: entity.id,
+                        entity: entity,
+                        title: entity.title || entity.firstName || "Chat",
+                        isUser: entity.className === 'User',
+                        isGroup: entity.className === 'Chat' || entity.megagroup,
+                        isChannel: entity.className === 'Channel' && !entity.megagroup,
+                        dialog: { unreadCount: 0 },
+                        message: lastMsg
+                    });
+                } catch (e) {
+                   console.log("Keshdan chat tiklashda xato:", e);
+                }
+            }
+            setChats(restoredChats);
+         } else {
+            setChats([]); 
+         }
       }
-      
     } catch (error) { 
       const errText = error.message ? error.message.toUpperCase() : "";
       if (errText.includes("AUTH_KEY_UNREGISTERED") || errText.includes("REVOKED") || errText.includes("DEACTIVATED")) {
@@ -419,11 +444,9 @@ function App() {
     setLoadingChats(false);
   };
 
-  // YANGI TOZA ULANISH (ODDIY AKKAUNT)
   const sendCode = async () => {
     if (!phoneNumber) return;
     try {
-      // Eskini unutib, yangi toza ulanish yaratamiz
       const newClient = new TelegramClient(new StringSession(""), apiId, apiHash, { connectionRetries: 5 });
       await newClient.connect();
       const result = await newClient.sendCode({ apiId, apiHash }, phoneNumber);
@@ -463,11 +486,9 @@ function App() {
     }
   };
 
-  // YANGI TOZA ULANISH (BOT TOKEN)
   const handleBotLogin = async () => {
     if (!botToken) return;
     try {
-      // Botlar uchun eng to'g'ri usul (.start)
       const newClient = new TelegramClient(new StringSession(""), apiId, apiHash, { connectionRetries: 5 });
       await newClient.start({ botAuthToken: botToken });
       
@@ -483,8 +504,14 @@ function App() {
 
   const openChat = async (chat) => {
     if (!client) return;
+    
+    // Eski xabarlarni tozalash o'rniga, sekin yuklanmasligi uchun
+    // Agar boshqa chat ochilayotgan bo'lsa tozalaymiz
+    if (activeChat?.id !== chat.id) {
+       setMessages([]); 
+    }
+    
     setActiveChat(chat);
-    setMessages([]); 
     setNewMessage('');
     setIsRecording(false); 
     setReplyingTo(null); 
@@ -692,36 +719,6 @@ function App() {
     setViewProfileLoading(false);
   };
 
-  const openStoryViewer = async (peerStory, chatTitle) => {
-    if (!client) return;
-    setActiveStory({ peerStory, chatTitle });
-    setStoryMedia(null);
-    setStoryProgress(0);
-    setIsStoryLoading(true);
-    try {
-      const item = peerStory.items[peerStory.items.length - 1]; 
-      let buffer = null;
-      try { buffer = await client.downloadMedia(item); } catch (e) {}
-      if ((!buffer || buffer.length === 0) && item.media) {
-         try { buffer = await client.downloadMedia(item.media); } catch (e) {}
-      }
-
-      if (buffer && buffer.length > 0) {
-        const isVideo = !!(item.media && item.media.document);
-        const mime = isVideo ? 'video/mp4' : 'image/jpeg';
-        setStoryMedia({
-          url: URL.createObjectURL(new Blob([buffer], { type: mime })),
-          type: isVideo ? 'video' : 'image'
-        });
-      } else {
-        setStoryMedia({ url: null, type: 'error' });
-      }
-    } catch (error) { 
-      setStoryMedia({ url: null, type: 'error' });
-    }
-    setIsStoryLoading(false);
-  };
-
   const closeStoryViewer = () => {
     setActiveStory(null);
     setStoryMedia(null);
@@ -798,41 +795,6 @@ function App() {
             <button onClick={() => { setReplyingTo(selectedMessage); setSelectedMessage(null); }} style={{ padding: '12px', borderRadius: '10px', border: 'none', backgroundColor: '#0088cc', color: 'white', fontSize: '15px', cursor: 'pointer', fontWeight: 'bold' }}>↪️ Javob berish (Reply)</button>
             {selectedMessage.out && <button onClick={() => { handleDeleteMessage(selectedMessage.id); setSelectedMessage(null); }} style={{ padding: '12px', borderRadius: '10px', border: 'none', backgroundColor: '#dc3545', color: 'white', fontSize: '15px', cursor: 'pointer', fontWeight: 'bold' }}>🗑 Hammadan o'chirish</button>}
             <button onClick={() => setSelectedMessage(null)} style={{ padding: '12px', borderRadius: '10px', border: `1px solid ${theme.border}`, backgroundColor: 'transparent', color: theme.text, fontSize: '15px', cursor: 'pointer', marginTop: '5px' }}>Bekor qilish</button>
-          </div>
-        </div>
-      )}
-
-      {activeStory && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000', zIndex: 9999, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ position: 'absolute', top: '10px', left: '10px', right: '10px', zIndex: 10 }}>
-             <div style={{ width: '100%', height: '3px', backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: '2px', overflow: 'hidden', display: 'flex' }}>
-                <div style={{ width: `${storyProgress}%`, backgroundColor: '#fff', height: '100%', transition: 'width 0.1s linear' }} />
-             </div>
-             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                   <div style={{ width: '35px', height: '35px', borderRadius: '50%', backgroundColor: '#0088cc', display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff', fontWeight: 'bold' }}>
-                     {activeStory.chatTitle.charAt(0)}
-                   </div>
-                   <span style={{ color: '#fff', fontWeight: 'bold', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>{activeStory.chatTitle}</span>
-                </div>
-                <button onClick={closeStoryViewer} style={{ background: 'none', border: 'none', color: '#fff', fontSize: '24px', cursor: 'pointer', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>✕</button>
-             </div>
-          </div>
-          <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '50px 0' }}>
-            {isStoryLoading ? (
-              <div style={{ color: '#fff', fontSize: '18px' }}>Yuklanmoqda... ⏳</div>
-            ) : storyMedia && storyMedia.type !== 'error' ? (
-              storyMedia.type === 'video' ? (
-                 <video src={storyMedia.url} autoPlay playsInline style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: '10px' }} />
-              ) : (
-                 <img src={storyMedia.url} alt="Story" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: '10px' }} />
-              )
-            ) : (
-              <div style={{ color: '#fff', textAlign: 'center' }}>
-                <span style={{ fontSize: '40px' }}>⚠️</span><br/>
-                Story formatini brauzerda ochib bo'lmadi
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -966,33 +928,6 @@ function App() {
                 <button onClick={() => setShowProfileSettings(true)} style={{ background: 'none', border: 'none', color: 'white', fontSize: '22px', cursor: 'pointer', padding: '0 5px' }}>⋮</button>
               </div>
             </div>
-            
-            {stories.length > 0 && (
-              <div style={{ display: 'flex', overflowX: 'auto', padding: '10px', gap: '10px', backgroundColor: theme.panelBg, borderBottom: `1px solid ${theme.border}`, scrollbarWidth: 'none' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', minWidth: '60px' }}>
-                    <div style={{ width: '56px', height: '56px', borderRadius: '50%', border: '2px solid #ddd', padding: '2px', position: 'relative' }}>
-                      {myPhotoUrl ? <img src={myPhotoUrl} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : <div style={{ width: '100%', height: '100%', borderRadius: '50%', backgroundColor: '#005f8f', color:'white', display:'flex', justifyContent:'center', alignItems:'center' }}>{currentUser?.firstName?.charAt(0) || '+'}</div>}
-                      <div style={{ position: 'absolute', bottom: 0, right: 0, width: '18px', height: '18px', backgroundColor: '#0088cc', borderRadius: '50%', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '12px', fontWeight: 'bold', border: `2px solid ${theme.panelBg}` }}>+</div>
-                    </div>
-                    <span style={{ fontSize: '11px', color: theme.text, marginTop: '4px', maxWidth: '60px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Siz</span>
-                </div>
-                {stories.map((story, idx) => {
-                    const peerId = story.peer.userId || story.peer.channelId;
-                    const chat = chats.find(c => String(c.id).replace('-100','') === String(peerId));
-                    if (!chat) return null;
-                    return (
-                      <div key={idx} onClick={() => openStoryViewer(story, chat.title)} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', minWidth: '60px' }}>
-                          <div style={{ width: '56px', height: '56px', borderRadius: '50%', background: 'linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)', padding: '2px' }}>
-                            <div style={{ width: '100%', height: '100%', backgroundColor: theme.panelBg, borderRadius: '50%', padding: '2px' }}>
-                                <LazyAvatar client={client} entity={chat.entity} size={'100%'} fallbackText={chat.title} />
-                            </div>
-                          </div>
-                          <span style={{ fontSize: '11px', color: theme.text, marginTop: '4px', maxWidth: '60px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chat.title.split(' ')[0]}</span>
-                      </div>
-                    );
-                })}
-              </div>
-            )}
 
             <div style={{ display: 'flex', overflowX: 'auto', borderBottom: `1px solid ${theme.border}`, backgroundColor: theme.panelBg }}>
               {TABS.map(tab => (
@@ -1005,7 +940,8 @@ function App() {
               
               {chats.length === 0 && !loadingChats && currentUser?.bot && (
                 <div style={{ padding: '20px', textAlign: 'center', color: theme.textMuted, fontSize: '14px' }}>
-                   🤖 Siz Bot panelidasiz. Chatlar bu yerda kimdir sizga yozgandagina paydo bo'ladi.
+                   🤖 Siz Bot panelidasiz. Chatlar bu yerda kimdir sizga yozgandagina paydo bo'ladi. <br/><br/>
+                   Hozircha bo'sh, ammo kimdir yozishi bilan bu yerda saqlanib qoladi!
                 </div>
               )}
 
