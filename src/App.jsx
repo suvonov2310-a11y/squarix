@@ -34,12 +34,10 @@ const LazyAvatar = ({ client, entity, size = 45, fallbackText, style }) => {
     let isMounted = true;
     if (client && entity) {
       const idStr = entity.id ? entity.id.toString() : null;
-      
       if (idStr && globalAvatarCache.has(idStr)) {
          setImgUrl(globalAvatarCache.get(idStr));
          return;
       }
-
       client.downloadProfilePhoto(entity).then(buffer => {
         if (buffer && buffer.length > 0 && isMounted) {
           const url = URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' }));
@@ -123,7 +121,7 @@ const MessageItem = ({ msg, client, activeChat, theme, onMessageClick, getReplie
         
         <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '4px', fontSize: '11px', color: theme.textMuted, height: '14px' }}>
           <span>{msgTime}</span>
-          {msg.out && <span style={{ color: isRead ? '#34b7f1' : theme.textMuted, fontSize: '13px', fontWeight: 'bold' }}>{isRead ? '✓✓' : '✓'}</span>}
+          {msg.out && !activeChat?.entity?.bot && <span style={{ color: isRead ? '#34b7f1' : theme.textMuted, fontSize: '13px', fontWeight: 'bold' }}>{isRead ? '✓✓' : '✓'}</span>}
         </div>
       </div>
     </div>
@@ -147,22 +145,15 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [loadingChats, setLoadingChats] = useState(false);
   const [newMessage, setNewMessage] = useState('');
-  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [sendingMedia, setSendingMedia] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [replyingTo, setReplyingTo] = useState(null);
 
   const [currentUser, setCurrentUser] = useState(null);
-  const [currentUserFull, setCurrentUserFull] = useState(null);
   const [myPhotoUrl, setMyPhotoUrl] = useState('');
   const [showProfileSettings, setShowProfileSettings] = useState(false);
   const [activeTab, setActiveTab] = useState('all');
-  
-  const [isEditingBio, setIsEditingBio] = useState(false);
-  const [editBioText, setEditBioText] = useState("");
-  const [isEditingUsername, setIsEditingUsername] = useState(false);
-  const [editUsernameText, setEditUsernameText] = useState("");
 
   const [viewProfileModal, setViewProfileModal] = useState(false);
   const [viewProfileData, setViewProfileData] = useState(null);
@@ -170,12 +161,6 @@ function App() {
 
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [emojiMenuTab, setEmojiMenuTab] = useState('emoji');
-
-  const [stories, setStories] = useState([]);
-  const [activeStory, setActiveStory] = useState(null); 
-  const [storyMedia, setStoryMedia] = useState(null); 
-  const [isStoryLoading, setIsStoryLoading] = useState(false);
-  const [storyProgress, setStoryProgress] = useState(0);
 
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isGhostMode, setIsGhostMode] = useState(false);
@@ -232,18 +217,17 @@ function App() {
             setClient(tgClient);
             fetchInitialData(tgClient);
         }).catch(e => {
-            if (e.message && (e.message.includes("AUTH") || e.message.includes("REVOKED") || e.message.includes("DEACTIVATED"))) {
-                localStorage.removeItem("squarix_session");
-                window.location.reload();
-            }
+            localStorage.removeItem("squarix_session");
+            window.location.reload();
         });
     }
   }, []);
 
+  // Botning yozishmalarini uning ID siga qarab saqlaymiz (Har bir botning o'z oynasi bo'ladi)
   useEffect(() => {
     if (currentUser && currentUser.bot && chats.length > 0) {
       const botChatIds = chats.map(c => c.id.toString());
-      localStorage.setItem("squarix_bot_chats", JSON.stringify(botChatIds));
+      localStorage.setItem(`squarix_bot_chats_${currentUser.id}`, JSON.stringify(botChatIds));
     }
   }, [chats, currentUser]);
 
@@ -267,23 +251,31 @@ function App() {
       if (client) await client.invoke(new Api.auth.LogOut());
     } catch (e) {}
     localStorage.removeItem("squarix_session");
-    localStorage.removeItem("squarix_bot_chats");
     window.location.reload(); 
   };
 
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
+  // JONLI EFIR (REAL-TIME XABARLAR)
   useEffect(() => {
     if (!client) return;
     
     const handleNewMessage = async (event) => {
       const message = event.message;
       const currentChat = activeChatRef.current;
+      
+      // Xabar kimdan yoki qayerdan kelganini aniqlash
+      const peerIdObj = message.peerId;
+      if (!peerIdObj) return;
+      
+      const peerId = peerIdObj.userId || peerIdObj.channelId || peerIdObj.chatId || message.chatId;
+      const chatIdStr = String(peerId).replace('-100', '');
+      
       let isNewChat = false;
       
       setChats(prevChats => {
-        const chatIndex = prevChats.findIndex(c => String(c.id).replace('-100','') === String(message.chatId).replace('-100',''));
+        const chatIndex = prevChats.findIndex(c => String(c.id).replace('-100','') === chatIdStr);
         if (chatIndex > -1) {
           const newChats = [...prevChats];
           const chatToUpdate = { ...newChats[chatIndex], message: message };
@@ -299,66 +291,52 @@ function App() {
         }
       });
 
+      // Agar chat ro'yxatda yo'q bo'lsa (yangi mijoz yozsa yoki bot birinchi marta javob qaytarsa)
       if (isNewChat) {
          try {
-            const entity = await client.getEntity(message.chatId);
-            const newChat = {
-               id: message.chatId,
-               entity: entity,
-               title: entity.title || entity.firstName || "Yangi chat",
-               isUser: entity.className === 'User',
-               isGroup: entity.className === 'Chat' || entity.megagroup,
-               isChannel: entity.className === 'Channel' && !entity.megagroup,
-               dialog: { unreadCount: 1 },
-               message: message
-            };
-            setChats(prev => {
-               if (prev.some(c => String(c.id).replace('-100','') === String(message.chatId).replace('-100',''))) return prev;
-               return [newChat, ...prev];
-            });
-         } catch (e) {}
+            // Entitini olishga harakat qilamiz
+            let entity = message.sender || message.chat;
+            if (!entity) {
+                try { entity = await client.getEntity(peerId); } catch(e) {}
+            }
+            
+            if (entity) {
+                const newChat = {
+                   id: peerId,
+                   entity: entity,
+                   title: entity.title || entity.firstName || "Foydalanuvchi",
+                   isUser: entity.className === 'User',
+                   isGroup: entity.className === 'Chat' || entity.megagroup,
+                   isChannel: entity.className === 'Channel' && !entity.megagroup,
+                   dialog: { unreadCount: message.out ? 0 : 1 },
+                   message: message
+                };
+                setChats(prev => {
+                   if (prev.some(c => String(c.id).replace('-100','') === chatIdStr)) return prev;
+                   return [newChat, ...prev];
+                });
+            }
+         } catch (e) { console.log("Entity olishda xato:", e); }
       }
 
-      if (currentChat && message.chatId) {
-        const msgId = String(message.chatId).replace('-100', '');
-        const chatId = String(currentChat.id).replace('-100', '');
-        if (msgId === chatId) {
+      // Agar foydalanuvchi aynan shu chatda bo'lsa
+      if (currentChat && chatIdStr === String(currentChat.id).replace('-100', '')) {
           setMessages(prev => {
             if (prev.some(m => m.id === message.id)) return prev;
             return [...prev, message];
           });
-          if (!isGhostModeRef.current && !message.out) {
+          if (!isGhostModeRef.current && !message.out && !currentUser?.bot) {
             try { await client.invoke(new Api.messages.ReadHistory({ peer: currentChat.entity, maxId: 0 })); } catch (e) {}
           }
-        }
       }
     };
 
-    const handleRawEvent = (event) => {
-       if (event.className === 'UpdateDeleteMessages' || event.className === 'UpdateDeleteChannelMessages') {
-           const deletedIds = event.messages;
-           if (!deletedIds || deletedIds.length === 0) return;
-
-           setMessages(prev => prev.map(msg => {
-               if (deletedIds.includes(msg.id)) return { ...msg, isDeleted: true };
-               return msg;
-           }));
-
-           setChats(prevChats => prevChats.map(c => {
-               if (c.message && deletedIds.includes(c.message.id)) return { ...c, message: { ...c.message, isDeleted: true }};
-               return c;
-           }));
-       }
-    };
-
     client.addEventHandler(handleNewMessage, new NewMessage({ incoming: true, outgoing: true }));
-    client.addEventHandler(handleRawEvent, new Raw({})); 
 
     return () => {
       client.removeEventHandler(handleNewMessage, new NewMessage({ incoming: true, outgoing: true }));
-      client.removeEventHandler(handleRawEvent, new Raw({}));
     }
-  }, [client]);
+  }, [client, currentUser]);
 
   const fetchInitialData = async (tgClient) => {
     if (!tgClient) return;
@@ -366,10 +344,7 @@ function App() {
     try {
       const me = await tgClient.getMe();
       setCurrentUser(me);
-      try {
-        const fullMe = await tgClient.invoke(new Api.users.GetFullUser({ id: me.id }));
-        setCurrentUserFull(fullMe);
-      } catch (e) {}
+      
       try {
         if (me.photo) {
           const buffer = await tgClient.downloadProfilePhoto(me);
@@ -378,14 +353,12 @@ function App() {
       } catch (e) {}
       
       if (!me.bot) {
+         // Oddiy raqam uchun tarixni tortib kelish
          const dialogs = await tgClient.getDialogs({ limit: 100 }); 
          setChats(dialogs);
-         try {
-           const storiesResult = await tgClient.invoke(new Api.stories.GetAllStories({}));
-           if (storiesResult && storiesResult.peerStories) setStories(storiesResult.peerStories);
-         } catch (err) {}
       } else {
-         const cachedBotChats = localStorage.getItem("squarix_bot_chats");
+         // BOT UCHUN: Faqat shu botga tegishli keshni o'qiymiz
+         const cachedBotChats = localStorage.getItem(`squarix_bot_chats_${me.id}`);
          if (cachedBotChats) {
             const parsedIds = JSON.parse(cachedBotChats);
             const restoredChats = [];
@@ -408,15 +381,14 @@ function App() {
                 } catch (e) {}
             }
             setChats(restoredChats);
-         } else { setChats([]); }
+         } else { 
+            // Agar yangi bot kiritilsa - TOZA OYNA!
+            setChats([]); 
+         }
       }
     } catch (error) { 
-      const errText = error.message ? error.message.toUpperCase() : "";
-      if (errText.includes("UNREGISTERED") || errText.includes("REVOKED") || errText.includes("DEACTIVATED")) {
-        alert("Sessiya yaroqsiz! Qaytadan kiring.");
-        localStorage.removeItem("squarix_session");
-        window.location.reload(); 
-      }
+      localStorage.removeItem("squarix_session");
+      window.location.reload(); 
     }
     setLoadingChats(false);
   };
@@ -496,36 +468,8 @@ function App() {
     try {
       const msgs = await client.getMessages(chat.entity, { limit: 100 });
       setMessages(msgs.reverse()); 
-      if (!isGhostModeRef.current) await client.invoke(new Api.messages.ReadHistory({ peer: chat.entity, maxId: 0 }));
+      if (!isGhostModeRef.current && !currentUser?.bot) await client.invoke(new Api.messages.ReadHistory({ peer: chat.entity, maxId: 0 }));
     } catch (error) {}
-  };
-
-  const startDirectChat = () => {
-    if (!viewProfileData || !viewProfileData.entity) return;
-    const targetEntity = viewProfileData.entity;
-    const targetIdStr = String(targetEntity.id).replace('-100', '');
-    setViewProfileModal(false); 
-    
-    let existingChat = chats.find(c => String(c.id).replace('-100', '') === targetIdStr);
-    if (existingChat) {
-      openChat(existingChat);
-      setActiveTab('all');
-    } else {
-      const isUser = targetEntity.className === 'User' || targetEntity.isUser;
-      const newChat = {
-        id: targetEntity.id,
-        entity: targetEntity,
-        title: viewProfileData.title,
-        isUser: isUser,
-        isGroup: targetEntity.className === 'Chat' || targetEntity.megagroup,
-        isChannel: targetEntity.className === 'Channel' && !targetEntity.megagroup,
-        dialog: { unreadCount: 0 },
-        message: null
-      };
-      setChats(prev => [newChat, ...prev]);
-      openChat(newChat);
-      setActiveTab('all');
-    }
   };
 
   const sendMessage = async () => {
@@ -534,18 +478,11 @@ function App() {
     setNewMessage('');
     setShowEmojiPicker(false);
     try {
+      // Botlar faqat user orqali (id orqali yozishi uchun entity ni ishlatamiz)
       const sentMessage = await client.sendMessage(activeChat.entity, { message: textToSend, replyTo: replyingTo ? replyingTo.id : undefined });
       setReplyingTo(null); 
       setMessages(prev => [...prev, sentMessage]);
-    } catch (error) { alert("Xabarni yuborib bo'lmadi!"); }
-  };
-
-  const handleDeleteMessage = async (msgId) => {
-    if (!client) return;
-    try {
-      await client.deleteMessages(activeChat.entity, [msgId], { revoke: true });
-      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, isDeleted: true } : m));
-    } catch (error) { alert("Xabarni o'chirib bo'lmadi!"); }
+    } catch (error) { alert("Xabarni yuborib bo'lmadi! (Bot faqat unga yozganlargagina yoza oladi)"); }
   };
 
   const handleMediaUpload = async (event) => {
@@ -565,77 +502,6 @@ function App() {
       setMessages(prev => [...prev, sentMessage]);
     } catch (error) { alert("Media jo'natishda xatolik!"); }
     finally { setSendingMedia(false); event.target.value = null; }
-  };
-
-  const toggleRecording = async () => {
-    if (isRecording) {
-      if (mediaRecorderRef.current) {
-        mediaRecorderRef.current.stop();
-        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-      }
-      setIsRecording(false);
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const recorder = new MediaRecorder(stream);
-        mediaRecorderRef.current = recorder;
-        audioChunksRef.current = [];
-        recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-        recorder.onstop = async () => {
-          setSendingMedia(true);
-          try {
-            const mimeType = recorder.mimeType || 'audio/webm'; 
-            const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-            const arrayBuffer = await audioBlob.arrayBuffer();
-            const buffer = Buffer.from(arrayBuffer);
-            const file = new File([buffer], "voice.ogg", { type: mimeType });
-            const uploadedFile = await client.uploadFile({ file: file, workers: 1 });
-            const sentMessage = await client.sendMessage(activeChat.entity, { file: uploadedFile, voiceNote: true, replyTo: replyingTo ? replyingTo.id : undefined });
-            setReplyingTo(null);
-            setMessages(prev => [...prev, sentMessage]);
-          } catch (error) { alert("Ovozli xabar jo'natilmadi."); }
-          finally { setSendingMedia(false); }
-        };
-        recorder.start();
-        setIsRecording(true);
-      } catch (err) { alert("Mikrofonga ruxsat bermadingiz!"); }
-    }
-  };
-
-  const handleProfilePhotoUpload = async (event) => {
-    const file = event.target.files[0];
-    if (!file || !client) return;
-    setUploadingPhoto(true);
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      const cleanFile = new File([buffer], file.name, { type: file.type });
-      const uploadedFile = await client.uploadFile({ file: cleanFile, workers: 1 });
-      await client.invoke(new Api.photos.UploadProfilePhoto({ file: uploadedFile }));
-      alert("Profil rasmingiz yangilandi!");
-      const me = await client.getMe();
-      const photoBuffer = await client.downloadProfilePhoto(me);
-      if (photoBuffer && photoBuffer.length > 0) setMyPhotoUrl(URL.createObjectURL(new Blob([photoBuffer], { type: 'image/jpeg' })));
-    } catch (error) { alert("Rasm yuklashda xato!"); } 
-    finally { setUploadingPhoto(false); }
-  };
-
-  const handleSaveBio = async () => {
-    if (!client) return;
-    try {
-      await client.invoke(new Api.account.UpdateProfile({ about: editBioText }));
-      setCurrentUserFull(prev => ({ ...prev, fullUser: { ...prev.fullUser, about: editBioText } }));
-      setIsEditingBio(false);
-    } catch (e) { alert("Tarjimai holni saqlashda xatolik!"); }
-  };
-
-  const handleSaveUsername = async () => {
-    if (!client) return;
-    try {
-      await client.invoke(new Api.account.UpdateUsername({ username: editUsernameText }));
-      setCurrentUser(prev => ({ ...prev, username: editUsernameText }));
-      setIsEditingUsername(false);
-    } catch (e) { alert("Username saqlashda xatolik! Ehtimol band yoki noto'g'ri."); }
   };
 
   const handleOpenUserProfile = async (targetEntity, fallbackTitle) => {
@@ -686,12 +552,6 @@ function App() {
     setViewProfileLoading(false);
   };
 
-  const closeStoryViewer = () => {
-    setActiveStory(null);
-    setStoryMedia(null);
-    setStoryProgress(0);
-  };
-
   const filteredChats = chats.filter(chat => {
     const isBot = chat.entity?.bot === true;
     const isUser = chat.isUser && !isBot;
@@ -707,9 +567,6 @@ function App() {
 
   const getRepliedMsg = (id) => { if (!id) return null; return messages.find(m => m.id === id); };
 
-  // ==========================================
-  // ZAMONAVIY LOGIN EKRANI (STEP < 4)
-  // ==========================================
   if (step < 4) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', width: '100vw', margin: '-8px', backgroundColor: '#e9ecef', fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" }}>
@@ -780,9 +637,6 @@ function App() {
     );
   }
 
-  // ==========================================
-  // ASOSIY CHAT EKRANI
-  // ==========================================
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw', fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", margin: '-8px', backgroundColor: theme.bg, overflow: 'hidden' }}>
       
@@ -791,7 +645,6 @@ function App() {
           <div style={{ backgroundColor: theme.panelBg, padding: '20px', borderRadius: '15px', minWidth: '280px', display: 'flex', flexDirection: 'column', gap: '10px', boxShadow: '0 4px 15px rgba(0,0,0,0.2)' }} onClick={e => e.stopPropagation()}>
             <h4 style={{ margin: '0 0 5px 0', color: theme.text, textAlign: 'center' }}>Amalni tanlang</h4>
             <button onClick={() => { setReplyingTo(selectedMessage); setSelectedMessage(null); }} style={{ padding: '12px', borderRadius: '10px', border: 'none', backgroundColor: '#0088cc', color: 'white', fontSize: '15px', cursor: 'pointer', fontWeight: 'bold' }}>↪️ Javob berish (Reply)</button>
-            {selectedMessage.out && <button onClick={() => { handleDeleteMessage(selectedMessage.id); setSelectedMessage(null); }} style={{ padding: '12px', borderRadius: '10px', border: 'none', backgroundColor: '#dc3545', color: 'white', fontSize: '15px', cursor: 'pointer', fontWeight: 'bold' }}>🗑 Hammadan o'chirish</button>}
             <button onClick={() => setSelectedMessage(null)} style={{ padding: '12px', borderRadius: '10px', border: `1px solid ${theme.border}`, backgroundColor: 'transparent', color: theme.text, fontSize: '15px', cursor: 'pointer', marginTop: '5px' }}>Bekor qilish</button>
           </div>
         </div>
@@ -829,28 +682,11 @@ function App() {
                     <span style={{ fontSize: '12px', color: theme.textMuted, fontWeight: 'bold' }}>Tarjimai hol (Bio) / Info:</span>
                     <p style={{ margin: '5px 0 0', color: theme.text, fontSize: '15px' }}>{viewProfileData.full?.fullUser?.about || viewProfileData.full?.fullChat?.about || (viewProfileLoading ? "Ma'lumot olinmoqda..." : "Ma'lumot kiritilmagan")}</p>
                   </div>
-                  {viewProfileData.phone && (
-                    <div>
-                      <span style={{ fontSize: '12px', color: theme.textMuted, fontWeight: 'bold' }}>Telefon raqam:</span>
-                      <p style={{ margin: '5px 0 0', color: theme.text, fontSize: '15px' }}>+{viewProfileData.phone}</p>
-                    </div>
-                  )}
                   <div style={{ marginTop: '10px' }}>
                     <span style={{ fontSize: '12px', color: theme.textMuted, fontWeight: 'bold' }}>ID Raqam:</span>
                     <p style={{ margin: '5px 0 0', color: theme.text, fontSize: '14px' }}>{String(viewProfileData.id).replace('-100', '')}</p>
                   </div>
                 </div>
-
-                {String(viewProfileData.id) !== String(currentUser?.id) && (
-                  <button 
-                    onClick={startDirectChat}
-                    style={{ width: '100%', padding: '14px', marginTop: '15px', backgroundColor: '#0088cc', color: 'white', border: 'none', borderRadius: '8px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', transition: '0.2s', boxShadow: '0 2px 5px rgba(0,0,0,0.2)' }}
-                    onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#007bb5'}
-                    onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#0088cc'}
-                  >
-                    {(viewProfileData.entity?.className === 'User' || viewProfileData.entity?.isUser) ? "💬 Xabar yozish" : "👁 Chatga o'tish"}
-                  </button>
-                )}
               </div>
             </div>
           </div>
@@ -871,48 +707,10 @@ function App() {
                 {myPhotoUrl ? <img src={myPhotoUrl} alt="Profil" style={{ width: '120px', height: '120px', borderRadius: '50%', objectFit: 'cover', border: '3px solid #0088cc' }} /> : <div style={{ width: '120px', height: '120px', borderRadius: '50%', backgroundColor: '#0088cc', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '40px', fontWeight: 'bold' }}>{currentUser?.firstName?.charAt(0) || 'U'}</div>}
               </div>
               <h2 style={{ margin: '0 0 5px 0', fontSize: '20px', color: theme.text }}>{currentUser?.firstName} {currentUser?.lastName}</h2>
-              {currentUser?.phone && <p style={{ margin: 0, color: theme.textMuted, fontSize: '15px' }}>+{currentUser?.phone}</p>}
-            </div>
-            
-            <div style={{ padding: '15px 20px', backgroundColor: theme.panelBg, marginTop: '10px', borderTop: `1px solid ${theme.border}`, borderBottom: `1px solid ${theme.border}` }}>
-              <div style={{ marginBottom: '15px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <p style={{ margin: 0, fontSize: '13px', color: '#0088cc', fontWeight: 'bold' }}>Tarjimai hol (Bio)</p>
-                  {!isEditingBio ? (
-                    <button onClick={() => { setEditBioText(currentUserFull?.fullUser?.about || ""); setIsEditingBio(true); }} style={{ background: 'none', border: 'none', color: theme.textMuted, cursor: 'pointer', fontSize: '15px' }}>✏️</button>
-                  ) : (
-                    <button onClick={handleSaveBio} style={{ background: 'none', border: 'none', color: '#28a745', cursor: 'pointer', fontWeight: 'bold' }}>Saqlash</button>
-                  )}
-                </div>
-                {!isEditingBio ? (
-                  <p style={{ margin: '5px 0 0 0', fontSize: '15px', color: theme.text }}>{currentUserFull?.fullUser?.about || "Ma'lumot kiritilmagan"}</p>
-                ) : (
-                  <input type="text" value={editBioText} onChange={e => setEditBioText(e.target.value)} style={{ width: '100%', padding: '8px', marginTop: '5px', borderRadius: '5px', border: `1px solid ${theme.border}`, backgroundColor: theme.inputBg, color: theme.text, outline: 'none' }} placeholder="O'zingiz haqingizda yozing..." />
-                )}
-              </div>
-
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <p style={{ margin: '0', fontSize: '13px', color: '#0088cc', fontWeight: 'bold' }}>Username</p>
-                  {!isEditingUsername ? (
-                    <button onClick={() => { setEditUsernameText(currentUser?.username || ""); setIsEditingUsername(true); }} style={{ background: 'none', border: 'none', color: theme.textMuted, cursor: 'pointer', fontSize: '15px' }}>✏️</button>
-                  ) : (
-                    <button onClick={handleSaveUsername} style={{ background: 'none', border: 'none', color: '#28a745', cursor: 'pointer', fontWeight: 'bold' }}>Saqlash</button>
-                  )}
-                </div>
-                {!isEditingUsername ? (
-                  <p style={{ margin: '5px 0 0 0', fontSize: '15px', color: theme.text }}>{currentUser?.username ? `@${currentUser.username}` : "Username o'rnatilmagan"}</p>
-                ) : (
-                  <input type="text" value={editUsernameText} onChange={e => setEditUsernameText(e.target.value)} style={{ width: '100%', padding: '8px', marginTop: '5px', borderRadius: '5px', border: `1px solid ${theme.border}`, backgroundColor: theme.inputBg, color: theme.text, outline: 'none' }} placeholder="Faqat lotin harflari va raqamlar" />
-                )}
-              </div>
+              <p style={{ margin: 0, color: '#28a745', fontWeight: 'bold', fontSize: '13px' }}>{currentUser?.bot ? "Bot Akkaunt" : "Shaxsiy Akkaunt"}</p>
             </div>
 
-            {/* HARAKATLAR BO'LIMI */}
-            <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
-              <input type="file" id="profilePic" accept="image/*" style={{ display: 'none' }} onChange={handleProfilePhotoUpload} />
-              <label htmlFor="profilePic" style={{ display: 'block', width: '100%', padding: '14px', backgroundColor: theme.panelBg, border: `1px solid ${theme.border}`, color: theme.text, borderRadius: '10px', cursor: 'pointer', textAlign: 'center', fontSize: '15px', fontWeight: 'bold', transition: '0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>Rasmni o'zgartirish 📷</label>
-              
+            <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '15px' }}>              
               <button onClick={handleLogout} style={{ width: '100%', padding: '14px', backgroundColor: '#dc3545', color: 'white', borderRadius: '10px', cursor: 'pointer', border: 'none', fontSize: '15px', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px', transition: '0.2s', boxShadow: '0 2px 5px rgba(220, 53, 69, 0.3)' }}>
                  Boshqa akkauntga kirish / Chiqish 🚪
               </button>
@@ -926,11 +724,11 @@ function App() {
                 {myPhotoUrl ? <img src={myPhotoUrl} alt="Me" style={{ width: '42px', height: '42px', borderRadius: '50%', objectFit: 'cover' }} /> : <div style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: '#0088cc', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontWeight: 'bold', fontSize: '18px' }}>{currentUser?.firstName?.charAt(0) || 'S'}</div>}
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600' }}>{currentUser?.firstName || 'Yuklanmoqda...'}</h3>
-                   <span style={{ fontSize: '12px', color: theme.textMuted }}>{currentUser?.bot ? "Bot Panel" : "Shaxsiy"}</span>
+                   <span style={{ fontSize: '12px', color: currentUser?.bot ? '#28a745' : theme.textMuted, fontWeight: currentUser?.bot ? 'bold' : 'normal' }}>{currentUser?.bot ? "🤖 Bot Panel" : "Shaxsiy"}</span>
                 </div>
               </div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                <button onClick={toggleGhostMode} title={isGhostMode ? "Ghost rejim yoniq (Birovga o'qilganingiz ko'rinmaydi)" : "Ghost rejim o'chiq"} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', padding: '5px', opacity: isGhostMode ? 1 : 0.4, transition: '0.3s' }}>👻</button>
+                {!currentUser?.bot && <button onClick={toggleGhostMode} title={isGhostMode ? "Ghost rejim yoniq" : "Ghost rejim o'chiq"} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', padding: '5px', opacity: isGhostMode ? 1 : 0.4, transition: '0.3s' }}>👻</button>}
                 <button onClick={toggleThemeFunc} title="Tungi rejim" style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', padding: '5px' }}>{isDarkMode ? '☀️' : '🌙'}</button>
               </div>
             </div>
@@ -948,7 +746,7 @@ function App() {
                 <div style={{ padding: '30px 20px', textAlign: 'center', color: theme.textMuted, fontSize: '14px', lineHeight: '1.5' }}>
                    <span style={{fontSize: '40px', display: 'block', marginBottom: '10px'}}>🤖</span>
                    Siz **Bot** panelidasiz. <br/><br/>
-                   Hozircha chatlar bo'sh. Kimdir botingizga xabar yozishi bilan u shu yerda paydo bo'ladi va xotirada saqlanib qoladi!
+                   Hozircha suhbatlar yo'q. Kimdir botingizga yozishi bilan yoki avtomat kodingiz kimgadir javob berishi bilan u shu yerda paydo bo'ladi.
                 </div>
               )}
 
@@ -971,7 +769,7 @@ function App() {
                       )}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' }}>
-                      {isListOut && <span style={{ color: isListRead ? '#34b7f1' : theme.textMuted, fontSize: '12px', fontWeight: 'bold' }}>{isListRead ? '✓✓' : '✓'}</span>}
+                      {isListOut && !currentUser?.bot && <span style={{ color: isListRead ? '#34b7f1' : theme.textMuted, fontSize: '12px', fontWeight: 'bold' }}>{isListRead ? '✓✓' : '✓'}</span>}
                       
                       <p style={{ margin: 0, fontSize: '14px', color: isMsgDeleted ? '#dc3545' : theme.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
                         {isMsgDeleted ? "🗑 O'chirilgan xabar" : (chat.message?.message || (chat.message?.media ? "[Media]" : "Xabar yo'q"))}
@@ -999,7 +797,7 @@ function App() {
               <LazyAvatar client={client} entity={activeChat.entity} size={42} fallbackText={activeChat.title} />
               <div style={{ overflow: 'hidden' }}>
                 <h3 style={{ margin: 0, fontSize: '16px', color: theme.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{activeChat.title}</h3>
-                <span style={{ fontSize: '12px', color: theme.textMuted }}>{activeChat.entity?.bot ? "Bot" : activeChat.isGroup ? "Guruh" : activeChat.isChannel ? "Kanal" : "Shaxsiy"}</span>
+                <span style={{ fontSize: '12px', color: theme.textMuted }}>{activeChat.entity?.bot ? "Bot" : activeChat.isGroup ? "Guruh" : activeChat.isChannel ? "Kanal" : "Foydalanuvchi"}</span>
               </div>
             </div>
 
@@ -1055,16 +853,12 @@ function App() {
               <input type="file" id="mediaUpload" style={{ display: 'none' }} onChange={handleMediaUpload} />
               <label htmlFor="mediaUpload" style={{ fontSize: '24px', cursor: 'pointer', color: theme.textMuted, padding: '0 5px' }}>📎</label>
               <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} style={{ background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: showEmojiPicker ? '#0088cc' : theme.textMuted, padding: '0 5px' }}>😀</button>
-              <input type="text" placeholder={isRecording ? "🔴 Ovoz yozilmoqda (⏹ bosing)..." : "Xabar yozing..."} value={newMessage} onChange={(e) => setNewMessage(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !isRecording) sendMessage(); }} disabled={isRecording} style={{ flex: 1, padding: '14px 20px', borderRadius: '25px', border: `1px solid ${theme.border}`, outline: 'none', fontSize: '15px', color: theme.text, backgroundColor: isRecording ? (isDarkMode ? '#5c2b2f' : '#ffebee') : theme.inputBg }} />
-              {newMessage.trim() && !isRecording ? (
-                <button onClick={sendMessage} style={{ padding: '12px 20px', borderRadius: '25px', border: 'none', backgroundColor: '#0088cc', color: 'white', cursor: 'pointer', fontWeight: 'bold' }}>Yuborish</button>
-              ) : (
-                <button onClick={toggleRecording} style={{ width: '45px', height: '45px', borderRadius: '50%', border: 'none', backgroundColor: isRecording ? '#dc3545' : '#0088cc', color: 'white', cursor: 'pointer', fontSize: '20px', display: 'flex', justifyContent: 'center', alignItems: 'center', transition: '0.2s', boxShadow: '0 2px 5px rgba(0,0,0,0.2)' }}>{isRecording ? '⏹' : '🎤'}</button>
-              )}
+              <input type="text" placeholder="Xabar yozing..." value={newMessage} onChange={(e) => setNewMessage(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') sendMessage(); }} style={{ flex: 1, padding: '14px 20px', borderRadius: '25px', border: `1px solid ${theme.border}`, outline: 'none', fontSize: '15px', color: theme.text, backgroundColor: theme.inputBg }} />
+              <button onClick={sendMessage} disabled={!newMessage.trim()} style={{ padding: '12px 20px', borderRadius: '25px', border: 'none', backgroundColor: newMessage.trim() ? '#0088cc' : '#ccc', color: 'white', cursor: newMessage.trim() ? 'pointer' : 'default', fontWeight: 'bold', transition: '0.2s' }}>Yuborish</button>
             </div>
           </>
         ) : (
-          <div style={{ margin: 'auto', backgroundColor: isDarkMode ? '#333' : 'rgba(0,0,0,0.05)', padding: '12px 25px', borderRadius: '20px', color: theme.textMuted, fontSize: '15px', fontWeight: 'bold', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.1)' }}>Chatni tanlang</div>
+          <div style={{ margin: 'auto', backgroundColor: isDarkMode ? '#333' : 'rgba(0,0,0,0.05)', padding: '12px 25px', borderRadius: '20px', color: theme.textMuted, fontSize: '15px', fontWeight: 'bold', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.1)' }}>Suhbatni tanlang</div>
         )}
       </div>
     </div>
