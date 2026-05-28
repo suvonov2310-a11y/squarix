@@ -140,6 +140,7 @@ function App() {
   
   const [client, setClient] = useState(null);
   const [step, setStep] = useState(1); 
+  const [isLoading, setIsLoading] = useState(false);
   
   const [chats, setChats] = useState([]);
   const [activeChat, setActiveChat] = useState(null);
@@ -188,16 +189,16 @@ function App() {
 
   const theme = {
     bg: isDarkMode ? '#0f0f0f' : '#f0f2f5',
-    chatBg: isDarkMode ? '#1e1e1e' : '#e5ddd5',
+    chatBg: isDarkMode ? '#1e1e1e' : '#efeae2',
     panelBg: isDarkMode ? '#1a1a1a' : 'white',
     text: isDarkMode ? '#ffffff' : '#000000',
     textMuted: isDarkMode ? '#aaaaaa' : '#888888',
-    border: isDarkMode ? '#333333' : '#dddddd',
-    activeChat: isDarkMode ? '#2d2d2d' : '#e9ecef',
+    border: isDarkMode ? '#333333' : '#e0e0e0',
+    activeChat: isDarkMode ? '#2d2d2d' : '#f0f2f5',
     messageOut: isDarkMode ? '#2b5278' : '#dcf8c6',
     messageIn: isDarkMode ? '#2d2d2d' : 'white',
     inputBg: isDarkMode ? '#333333' : 'white',
-    inputPanel: isDarkMode ? '#1a1a1a' : '#f0f0f0'
+    inputPanel: isDarkMode ? '#1a1a1a' : '#f0f2f5'
   };
 
   const TABS = [
@@ -212,7 +213,6 @@ function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // MUHIM QISMI: Tizimga avtomatik kirish va chatlarni qayta tiklash
   useEffect(() => {
     const savedTheme = localStorage.getItem("squarix_theme");
     if (savedTheme === "dark") setIsDarkMode(true);
@@ -240,10 +240,8 @@ function App() {
     }
   }, []);
 
-  // YANGI: Botlar uchun chatlarni xotirada saqlash
   useEffect(() => {
     if (currentUser && currentUser.bot && chats.length > 0) {
-      // Faqat kerakli ma'lumotlarni saqlaymiz (xotira to'lib ketmasligi uchun)
       const botChatIds = chats.map(c => c.id.toString());
       localStorage.setItem("squarix_bot_chats", JSON.stringify(botChatIds));
     }
@@ -263,7 +261,7 @@ function App() {
   };
 
   const handleLogout = async () => {
-    const confirmLogout = window.confirm("Haqiqatan ham akkauntdan chiqmoqchimisiz?");
+    const confirmLogout = window.confirm("Haqiqatan ham joriy akkauntdan chiqib, boshqasiga kirmoqchimisiz?");
     if (!confirmLogout) return;
     try {
       if (client) await client.invoke(new Api.auth.LogOut());
@@ -282,7 +280,6 @@ function App() {
     const handleNewMessage = async (event) => {
       const message = event.message;
       const currentChat = activeChatRef.current;
-      
       let isNewChat = false;
       
       setChats(prevChats => {
@@ -290,7 +287,6 @@ function App() {
         if (chatIndex > -1) {
           const newChats = [...prevChats];
           const chatToUpdate = { ...newChats[chatIndex], message: message };
-          
           if (!message.out && String(chatToUpdate.id).replace('-100','') !== String(currentChat?.id).replace('-100','')) {
             chatToUpdate.dialog = { ...chatToUpdate.dialog, unreadCount: (chatToUpdate.dialog?.unreadCount || 0) + 1 };
           }
@@ -320,7 +316,7 @@ function App() {
                if (prev.some(c => String(c.id).replace('-100','') === String(message.chatId).replace('-100',''))) return prev;
                return [newChat, ...prev];
             });
-         } catch (e) { console.log(e); }
+         } catch (e) {}
       }
 
       if (currentChat && message.chatId) {
@@ -331,11 +327,8 @@ function App() {
             if (prev.some(m => m.id === message.id)) return prev;
             return [...prev, message];
           });
-          
           if (!isGhostModeRef.current && !message.out) {
-            try {
-              await client.invoke(new Api.messages.ReadHistory({ peer: currentChat.entity, maxId: 0 }));
-            } catch (e) {}
+            try { await client.invoke(new Api.messages.ReadHistory({ peer: currentChat.entity, maxId: 0 })); } catch (e) {}
           }
         }
       }
@@ -347,16 +340,12 @@ function App() {
            if (!deletedIds || deletedIds.length === 0) return;
 
            setMessages(prev => prev.map(msg => {
-               if (deletedIds.includes(msg.id)) {
-                   return { ...msg, isDeleted: true };
-               }
+               if (deletedIds.includes(msg.id)) return { ...msg, isDeleted: true };
                return msg;
            }));
 
            setChats(prevChats => prevChats.map(c => {
-               if (c.message && deletedIds.includes(c.message.id)) {
-                    return { ...c, message: { ...c.message, isDeleted: true }};
-               }
+               if (c.message && deletedIds.includes(c.message.id)) return { ...c, message: { ...c.message, isDeleted: true }};
                return c;
            }));
        }
@@ -377,12 +366,10 @@ function App() {
     try {
       const me = await tgClient.getMe();
       setCurrentUser(me);
-      
       try {
         const fullMe = await tgClient.invoke(new Api.users.GetFullUser({ id: me.id }));
         setCurrentUserFull(fullMe);
       } catch (e) {}
-
       try {
         if (me.photo) {
           const buffer = await tgClient.downloadProfilePhoto(me);
@@ -391,18 +378,13 @@ function App() {
       } catch (e) {}
       
       if (!me.bot) {
-         // Oddiy foydalanuvchi
          const dialogs = await tgClient.getDialogs({ limit: 100 }); 
          setChats(dialogs);
-
          try {
            const storiesResult = await tgClient.invoke(new Api.stories.GetAllStories({}));
-           if (storiesResult && storiesResult.peerStories) {
-             setStories(storiesResult.peerStories);
-           }
+           if (storiesResult && storiesResult.peerStories) setStories(storiesResult.peerStories);
          } catch (err) {}
       } else {
-         // YANGI MANTIQ: Bot uchun keshni yuklash!
          const cachedBotChats = localStorage.getItem("squarix_bot_chats");
          if (cachedBotChats) {
             const parsedIds = JSON.parse(cachedBotChats);
@@ -410,7 +392,6 @@ function App() {
             for (let id of parsedIds) {
                 try {
                     const entity = await tgClient.getEntity(id);
-                    // Bot o'sha chatdagi oxirgi xabarni oladi
                     const msgs = await tgClient.getMessages(entity, { limit: 1 });
                     const lastMsg = msgs.length > 0 ? msgs[0] : null;
 
@@ -424,18 +405,14 @@ function App() {
                         dialog: { unreadCount: 0 },
                         message: lastMsg
                     });
-                } catch (e) {
-                   console.log("Keshdan chat tiklashda xato:", e);
-                }
+                } catch (e) {}
             }
             setChats(restoredChats);
-         } else {
-            setChats([]); 
-         }
+         } else { setChats([]); }
       }
     } catch (error) { 
       const errText = error.message ? error.message.toUpperCase() : "";
-      if (errText.includes("AUTH_KEY_UNREGISTERED") || errText.includes("REVOKED") || errText.includes("DEACTIVATED")) {
+      if (errText.includes("UNREGISTERED") || errText.includes("REVOKED") || errText.includes("DEACTIVATED")) {
         alert("Sessiya yaroqsiz! Qaytadan kiring.");
         localStorage.removeItem("squarix_session");
         window.location.reload(); 
@@ -446,70 +423,64 @@ function App() {
 
   const sendCode = async () => {
     if (!phoneNumber) return;
+    setIsLoading(true);
     try {
       const newClient = new TelegramClient(new StringSession(""), apiId, apiHash, { connectionRetries: 5 });
       await newClient.connect();
       const result = await newClient.sendCode({ apiId, apiHash }, phoneNumber);
-      
       globalTgClient = newClient;
       setClient(newClient);
       setPhoneCodeHash(result.phoneCodeHash);
       setStep(2);
-    } catch (error) { alert("Xatolik (Raqamni tekshiring): " + error.message); }
+    } catch (error) { alert("Xatolik: Raqamni to'g'ri kiritganingizni tekshiring (+998...)"); }
+    setIsLoading(false);
   };
 
   const verifyCode = async () => {
     if (!phoneCode || !client) return;
+    setIsLoading(true);
     try {
       await client.signIn({ phoneNumber, phoneCodeHash, phoneCode });
       localStorage.setItem("squarix_session", client.session.save());
       setStep(4);
       fetchInitialData(client); 
     } catch (error) { 
-      if (error.message && error.message.includes('SESSION_PASSWORD_NEEDED')) {
-         setStep(3); 
-      } else {
-         alert("Kod xatosi: " + error.message); 
-      }
+      if (error.message && error.message.includes('SESSION_PASSWORD_NEEDED')) { setStep(3); } 
+      else { alert("Kod xatosi: " + error.message); }
     }
+    setIsLoading(false);
   };
 
   const verifyPassword = async () => {
     if (!password || !client) return;
+    setIsLoading(true);
     try {
        await client.checkPassword(password);
        localStorage.setItem("squarix_session", client.session.save());
        setStep(4);
        fetchInitialData(client);
-    } catch (error) {
-       alert("Parol noto'g'ri: " + error.message);
-    }
+    } catch (error) { alert("Parol noto'g'ri!"); }
+    setIsLoading(false);
   };
 
   const handleBotLogin = async () => {
     if (!botToken) return;
+    setIsLoading(true);
     try {
       const newClient = new TelegramClient(new StringSession(""), apiId, apiHash, { connectionRetries: 5 });
       await newClient.start({ botAuthToken: botToken });
-      
       globalTgClient = newClient;
       setClient(newClient);
       localStorage.setItem("squarix_session", newClient.session.save());
       setStep(4);
       fetchInitialData(newClient);
-    } catch (error) {
-      alert("Bot token noto'g'ri: " + error.message);
-    }
+    } catch (error) { alert("Bot token xato yoki yaroqsiz!"); }
+    setIsLoading(false);
   };
 
   const openChat = async (chat) => {
     if (!client) return;
-    
-    // Eski xabarlarni tozalash o'rniga, sekin yuklanmasligi uchun
-    // Agar boshqa chat ochilayotgan bo'lsa tozalaymiz
-    if (activeChat?.id !== chat.id) {
-       setMessages([]); 
-    }
+    if (activeChat?.id !== chat.id) setMessages([]); 
     
     setActiveChat(chat);
     setNewMessage('');
@@ -525,10 +496,7 @@ function App() {
     try {
       const msgs = await client.getMessages(chat.entity, { limit: 100 });
       setMessages(msgs.reverse()); 
-
-      if (!isGhostModeRef.current) {
-        await client.invoke(new Api.messages.ReadHistory({ peer: chat.entity, maxId: 0 }));
-      }
+      if (!isGhostModeRef.current) await client.invoke(new Api.messages.ReadHistory({ peer: chat.entity, maxId: 0 }));
     } catch (error) {}
   };
 
@@ -539,7 +507,6 @@ function App() {
     setViewProfileModal(false); 
     
     let existingChat = chats.find(c => String(c.id).replace('-100', '') === targetIdStr);
-    
     if (existingChat) {
       openChat(existingChat);
       setActiveTab('all');
@@ -740,53 +707,84 @@ function App() {
 
   const getRepliedMsg = (id) => { if (!id) return null; return messages.find(m => m.id === id); };
 
+  // ==========================================
+  // ZAMONAVIY LOGIN EKRANI (STEP < 4)
+  // ==========================================
   if (step < 4) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '50px', fontFamily: 'sans-serif' }}>
-        <h1>Squarix Web 🚀</h1>
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', width: '100vw', margin: '-8px', backgroundColor: '#e9ecef', fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" }}>
         
-        {step === 1 && (
-          <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', backgroundColor: '#f0f2f5', padding: '5px', borderRadius: '10px' }}>
-             <button onClick={() => setLoginMode('user')} style={{ padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', backgroundColor: loginMode === 'user' ? '#0088cc' : 'transparent', color: loginMode === 'user' ? 'white' : '#555', fontWeight: 'bold', transition: '0.3s' }}>👤 Shaxsiy Akkaunt</button>
-             <button onClick={() => setLoginMode('bot')} style={{ padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', backgroundColor: loginMode === 'bot' ? '#0088cc' : 'transparent', color: loginMode === 'bot' ? 'white' : '#555', fontWeight: 'bold', transition: '0.3s' }}>🤖 Bot Token</button>
+        <div style={{ backgroundColor: 'white', padding: '40px', borderRadius: '20px', boxShadow: '0 10px 30px rgba(0,0,0,0.1)', width: '350px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          
+          <div style={{ width: '80px', height: '80px', backgroundColor: '#0088cc', borderRadius: '50%', display: 'flex', justifyContent: 'center', alignItems: 'center', marginBottom: '15px', boxShadow: '0 5px 15px rgba(0, 136, 204, 0.4)' }}>
+             <span style={{ color: 'white', fontSize: '35px', fontWeight: 'bold' }}>S</span>
           </div>
-        )}
+          
+          <h1 style={{ margin: '0 0 5px 0', fontSize: '24px', color: '#333' }}>Squarix Web</h1>
+          <p style={{ margin: '0 0 25px 0', fontSize: '14px', color: '#777', textAlign: 'center' }}>Telegram tizimiga ulanish</p>
 
-        {step === 1 && loginMode === 'user' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '300px' }}>
-            <input type="text" placeholder="+998..." value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} style={{ padding: '12px', fontSize: '16px', color: 'black', borderRadius: '8px', border: '1px solid #ccc' }} />
-            <button onClick={sendCode} style={{ padding: '12px', cursor: 'pointer', backgroundColor: '#0088cc', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>Kodni olish</button>
-          </div>
-        )}
+          {step === 1 && (
+            <>
+              <div style={{ display: 'flex', width: '100%', backgroundColor: '#f0f2f5', borderRadius: '10px', padding: '4px', marginBottom: '20px' }}>
+                 <button onClick={() => setLoginMode('user')} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: '8px', cursor: 'pointer', backgroundColor: loginMode === 'user' ? 'white' : 'transparent', color: loginMode === 'user' ? '#0088cc' : '#666', fontWeight: 'bold', transition: '0.3s', boxShadow: loginMode === 'user' ? '0 2px 5px rgba(0,0,0,0.05)' : 'none' }}>Oddiy raqam</button>
+                 <button onClick={() => setLoginMode('bot')} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: '8px', cursor: 'pointer', backgroundColor: loginMode === 'bot' ? 'white' : 'transparent', color: loginMode === 'bot' ? '#28a745' : '#666', fontWeight: 'bold', transition: '0.3s', boxShadow: loginMode === 'bot' ? '0 2px 5px rgba(0,0,0,0.05)' : 'none' }}>Bot Token</button>
+              </div>
 
-        {step === 1 && loginMode === 'bot' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '300px' }}>
-            <p style={{ textAlign: 'center', margin: '0 0 10px 0', fontSize: '13px', color: '#555' }}>BotFather'dan olingan tokenni kiriting.</p>
-            <input type="text" placeholder="123456:ABC-DEF..." value={botToken} onChange={(e) => setBotToken(e.target.value)} style={{ padding: '12px', fontSize: '14px', color: 'black', borderRadius: '8px', border: '1px solid #ccc' }} />
-            <button onClick={handleBotLogin} style={{ padding: '12px', cursor: 'pointer', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>Bot sifatida kirish</button>
-          </div>
-        )}
+              {loginMode === 'user' ? (
+                <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                     <label style={{ fontSize: '13px', color: '#555', fontWeight: 'bold' }}>Telefon raqam</label>
+                     <input type="text" placeholder="+998 90 123 45 67" value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} style={{ padding: '14px', fontSize: '16px', color: '#333', borderRadius: '10px', border: '1px solid #ddd', outline: 'none', transition: 'border 0.3s' }} onFocus={(e) => e.target.style.borderColor = '#0088cc'} onBlur={(e) => e.target.style.borderColor = '#ddd'} />
+                  </div>
+                  <button onClick={sendCode} disabled={isLoading || !phoneNumber} style={{ padding: '14px', cursor: isLoading ? 'wait' : 'pointer', backgroundColor: isLoading ? '#ccc' : '#0088cc', color: 'white', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '16px', transition: '0.3s' }}>
+                    {isLoading ? "Kuting..." : "Davom etish"}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                     <label style={{ fontSize: '13px', color: '#555', fontWeight: 'bold' }}>BotFather Token</label>
+                     <input type="text" placeholder="123456:ABC-DEF..." value={botToken} onChange={(e) => setBotToken(e.target.value)} style={{ padding: '14px', fontSize: '14px', color: '#333', borderRadius: '10px', border: '1px solid #ddd', outline: 'none', transition: 'border 0.3s' }} onFocus={(e) => e.target.style.borderColor = '#28a745'} onBlur={(e) => e.target.style.borderColor = '#ddd'} />
+                  </div>
+                  <button onClick={handleBotLogin} disabled={isLoading || !botToken} style={{ padding: '14px', cursor: isLoading ? 'wait' : 'pointer', backgroundColor: isLoading ? '#ccc' : '#28a745', color: 'white', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '16px', transition: '0.3s' }}>
+                    {isLoading ? "Kuting..." : "Bot sifatida kirish"}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
 
-        {step === 2 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '300px' }}>
-            <input type="text" placeholder="Kod..." value={phoneCode} onChange={(e) => setPhoneCode(e.target.value)} style={{ padding: '12px', fontSize: '16px', color: 'black', borderRadius: '8px', border: '1px solid #ccc' }} />
-            <button onClick={verifyCode} style={{ padding: '12px', cursor: 'pointer', backgroundColor: '#28a745', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>Kirish</button>
-          </div>
-        )}
+          {step === 2 && (
+            <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+              <p style={{ textAlign: 'center', fontSize: '14px', color: '#555', margin: 0 }}>Telegramdan kelgan kodni kiriting</p>
+              <input type="text" placeholder="12345" value={phoneCode} onChange={(e) => setPhoneCode(e.target.value)} style={{ padding: '14px', fontSize: '20px', letterSpacing: '5px', textAlign: 'center', color: '#333', borderRadius: '10px', border: '1px solid #0088cc', outline: 'none' }} />
+              <button onClick={verifyCode} disabled={isLoading || !phoneCode} style={{ padding: '14px', cursor: isLoading ? 'wait' : 'pointer', backgroundColor: isLoading ? '#ccc' : '#0088cc', color: 'white', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '16px' }}>
+                 {isLoading ? "Tekshirilmoqda..." : "Kirish"}
+              </button>
+              <button onClick={() => setStep(1)} style={{ background: 'none', border: 'none', color: '#0088cc', cursor: 'pointer', fontSize: '13px', marginTop: '5px' }}>Ortga qaytish</button>
+            </div>
+          )}
 
-        {step === 3 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center', width: '300px' }}>
-            <p style={{ color: 'black', textAlign: 'center', fontWeight: 'bold' }}>Sizning hisobingiz 2-bosqichli parol bilan himoyalangan 🔒</p>
-            <input type="password" placeholder="Parol..." value={password} onChange={(e) => setPassword(e.target.value)} style={{ padding: '12px', fontSize: '16px', color: 'black', width: '100%', borderRadius: '8px', border: '1px solid #ccc' }} />
-            <button onClick={verifyPassword} style={{ padding: '12px', cursor: 'pointer', backgroundColor: '#0088cc', color: '#fff', width: '100%', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>Tastiqlash</button>
-          </div>
-        )}
+          {step === 3 && (
+            <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+              <p style={{ textAlign: 'center', fontSize: '14px', color: '#555', margin: 0 }}>2-bosqichli parol (2FA) o'rnatilgan</p>
+              <input type="password" placeholder="Parol..." value={password} onChange={(e) => setPassword(e.target.value)} style={{ padding: '14px', fontSize: '16px', color: '#333', borderRadius: '10px', border: '1px solid #0088cc', outline: 'none' }} />
+              <button onClick={verifyPassword} disabled={isLoading || !password} style={{ padding: '14px', cursor: isLoading ? 'wait' : 'pointer', backgroundColor: isLoading ? '#ccc' : '#0088cc', color: 'white', border: 'none', borderRadius: '10px', fontWeight: 'bold', fontSize: '16px' }}>
+                 {isLoading ? "Tekshirilmoqda..." : "Tasdiqlash"}
+              </button>
+            </div>
+          )}
+
+        </div>
       </div>
     );
   }
 
+  // ==========================================
+  // ASOSIY CHAT EKRANI
+  // ==========================================
   return (
-    <div style={{ display: 'flex', height: '100vh', width: '100vw', fontFamily: 'sans-serif', margin: '-8px', backgroundColor: theme.bg, overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: '100vh', width: '100vw', fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", margin: '-8px', backgroundColor: theme.bg, overflow: 'hidden' }}>
       
       {selectedMessage && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'center' }} onClick={() => setSelectedMessage(null)}>
@@ -853,20 +851,21 @@ function App() {
                     {(viewProfileData.entity?.className === 'User' || viewProfileData.entity?.isUser) ? "💬 Xabar yozish" : "👁 Chatga o'tish"}
                   </button>
                 )}
-
               </div>
             </div>
           </div>
         </div>
       )}
 
+      {/* CHAP TOMON RO'YXAT (Chatlar va Sozlamalar) */}
       <div style={{ display: (isMobile && activeChat) ? 'none' : 'flex', width: isMobile ? '100%' : '320px', backgroundColor: theme.panelBg, borderRight: `1px solid ${theme.border}`, flexDirection: 'column' }}>
         {showProfileSettings ? (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: theme.bg, overflowY: 'auto' }}>
-            <div style={{ padding: '15px 20px', backgroundColor: '#0088cc', color: 'white', display: 'flex', alignItems: 'center', gap: '20px' }}>
+            <div style={{ padding: '15px 20px', backgroundColor: '#0088cc', color: 'white', display: 'flex', alignItems: 'center', gap: '20px', boxShadow: '0 2px 5px rgba(0,0,0,0.1)', zIndex: 10 }}>
               <button onClick={() => setShowProfileSettings(false)} style={{ background: 'none', border: 'none', color: 'white', fontSize: '20px', cursor: 'pointer' }}>←</button>
-              <h3 style={{ margin: 0 }}>Profil sozlamalari</h3>
+              <h3 style={{ margin: 0 }}>Sozlamalar</h3>
             </div>
+            
             <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', backgroundColor: theme.panelBg, borderBottom: `1px solid ${theme.border}` }}>
               <div style={{ position: 'relative', marginBottom: '15px' }}>
                 {myPhotoUrl ? <img src={myPhotoUrl} alt="Profil" style={{ width: '120px', height: '120px', borderRadius: '50%', objectFit: 'cover', border: '3px solid #0088cc' }} /> : <div style={{ width: '120px', height: '120px', borderRadius: '50%', backgroundColor: '#0088cc', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '40px', fontWeight: 'bold' }}>{currentUser?.firstName?.charAt(0) || 'U'}</div>}
@@ -908,40 +907,48 @@ function App() {
                 )}
               </div>
             </div>
+
+            {/* HARAKATLAR BO'LIMI */}
             <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
               <input type="file" id="profilePic" accept="image/*" style={{ display: 'none' }} onChange={handleProfilePhotoUpload} />
-              <label htmlFor="profilePic" style={{ display: 'block', width: '100%', padding: '12px', backgroundColor: '#28a745', color: 'white', borderRadius: '8px', cursor: 'pointer', textAlign: 'center', fontSize: '15px', fontWeight: 'bold' }}>Rasmni o'zgartirish 📷</label>
+              <label htmlFor="profilePic" style={{ display: 'block', width: '100%', padding: '14px', backgroundColor: theme.panelBg, border: `1px solid ${theme.border}`, color: theme.text, borderRadius: '10px', cursor: 'pointer', textAlign: 'center', fontSize: '15px', fontWeight: 'bold', transition: '0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>Rasmni o'zgartirish 📷</label>
               
-              <button onClick={handleLogout} style={{ width: '100%', padding: '12px', backgroundColor: '#dc3545', color: 'white', borderRadius: '8px', cursor: 'pointer', border: 'none', fontSize: '15px', fontWeight: 'bold' }}>Akkauntdan chiqish 🚪</button>
+              <button onClick={handleLogout} style={{ width: '100%', padding: '14px', backgroundColor: '#dc3545', color: 'white', borderRadius: '10px', cursor: 'pointer', border: 'none', fontSize: '15px', fontWeight: 'bold', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px', transition: '0.2s', boxShadow: '0 2px 5px rgba(220, 53, 69, 0.3)' }}>
+                 Boshqa akkauntga kirish / Chiqish 🚪
+              </button>
+              <p style={{ fontSize: '12px', color: theme.textMuted, textAlign: 'center', margin: '-5px 0 0 0' }}>Boshqa raqam yoki bot token qo'shish uchun avval joriy akkauntdan chiqishingiz kerak.</p>
             </div>
           </div>
         ) : (
           <>
-            <div style={{ padding: '10px 15px', backgroundColor: '#0088cc', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                {myPhotoUrl ? <img src={myPhotoUrl} alt="Me" style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover' }} /> : <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#005f8f', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontWeight: 'bold' }}>{currentUser?.firstName?.charAt(0) || 'S'}</div>}
-                <div style={{ display: 'flex', flexDirection: 'column' }}><h3 style={{ margin: 0, fontSize: '15px' }}>{currentUser?.firstName || '...'}</h3><span style={{ fontSize: '11px', color: '#b3e5fc' }}>Squarix Web</span></div>
+            <div style={{ padding: '10px 15px', backgroundColor: theme.panelBg, color: theme.text, display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${theme.border}` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }} onClick={() => setShowProfileSettings(true)}>
+                {myPhotoUrl ? <img src={myPhotoUrl} alt="Me" style={{ width: '42px', height: '42px', borderRadius: '50%', objectFit: 'cover' }} /> : <div style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: '#0088cc', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontWeight: 'bold', fontSize: '18px' }}>{currentUser?.firstName?.charAt(0) || 'S'}</div>}
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                   <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600' }}>{currentUser?.firstName || 'Yuklanmoqda...'}</h3>
+                   <span style={{ fontSize: '12px', color: theme.textMuted }}>{currentUser?.bot ? "Bot Panel" : "Shaxsiy"}</span>
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
-                <button onClick={toggleGhostMode} title={isGhostMode ? "Ghost rejim yoniq (Birovga o'qilganingiz ko'rinmaydi)" : "Ghost rejim o'chiq"} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', padding: '0 5px', opacity: isGhostMode ? 1 : 0.4, transition: '0.3s' }}>👻</button>
-                <button onClick={toggleThemeFunc} title="Tungi rejim" style={{ background: 'none', border: 'none', color: 'white', fontSize: '20px', cursor: 'pointer', padding: '0 5px' }}>{isDarkMode ? '☀️' : '🌙'}</button>
-                <button onClick={() => setShowProfileSettings(true)} style={{ background: 'none', border: 'none', color: 'white', fontSize: '22px', cursor: 'pointer', padding: '0 5px' }}>⋮</button>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button onClick={toggleGhostMode} title={isGhostMode ? "Ghost rejim yoniq (Birovga o'qilganingiz ko'rinmaydi)" : "Ghost rejim o'chiq"} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', padding: '5px', opacity: isGhostMode ? 1 : 0.4, transition: '0.3s' }}>👻</button>
+                <button onClick={toggleThemeFunc} title="Tungi rejim" style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', padding: '5px' }}>{isDarkMode ? '☀️' : '🌙'}</button>
               </div>
             </div>
 
             <div style={{ display: 'flex', overflowX: 'auto', borderBottom: `1px solid ${theme.border}`, backgroundColor: theme.panelBg }}>
               {TABS.map(tab => (
-                <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ flex: '1', padding: '10px 5px', border: 'none', backgroundColor: 'transparent', color: activeTab === tab.id ? '#0088cc' : theme.textMuted, borderBottom: activeTab === tab.id ? '3px solid #0088cc' : '3px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: activeTab === tab.id ? 'bold' : 'normal', transition: 'all 0.2s' }}>{tab.label}</button>
+                <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ flex: '1', padding: '12px 5px', border: 'none', backgroundColor: 'transparent', color: activeTab === tab.id ? '#0088cc' : theme.textMuted, borderBottom: activeTab === tab.id ? '3px solid #0088cc' : '3px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: activeTab === tab.id ? 'bold' : 'normal', transition: 'all 0.2s' }}>{tab.label}</button>
               ))}
             </div>
             
             <div style={{ flex: 1, overflowY: 'auto', backgroundColor: theme.panelBg }}>
-              {loadingChats && <div style={{ padding: '20px', textAlign: 'center', color: theme.textMuted }}>Yuklanmoqda...</div>}
+              {loadingChats && <div style={{ padding: '20px', textAlign: 'center', color: theme.textMuted }}>Sinxronizatsiya... ⏳</div>}
               
               {chats.length === 0 && !loadingChats && currentUser?.bot && (
-                <div style={{ padding: '20px', textAlign: 'center', color: theme.textMuted, fontSize: '14px' }}>
-                   🤖 Siz Bot panelidasiz. Chatlar bu yerda kimdir sizga yozgandagina paydo bo'ladi. <br/><br/>
-                   Hozircha bo'sh, ammo kimdir yozishi bilan bu yerda saqlanib qoladi!
+                <div style={{ padding: '30px 20px', textAlign: 'center', color: theme.textMuted, fontSize: '14px', lineHeight: '1.5' }}>
+                   <span style={{fontSize: '40px', display: 'block', marginBottom: '10px'}}>🤖</span>
+                   Siz **Bot** panelidasiz. <br/><br/>
+                   Hozircha chatlar bo'sh. Kimdir botingizga xabar yozishi bilan u shu yerda paydo bo'ladi va xotirada saqlanib qoladi!
                 </div>
               )}
 
@@ -954,13 +961,13 @@ function App() {
                 const isMsgDeleted = chat.message?.isDeleted;
 
                 return (
-                <div key={idx} onClick={() => openChat(chat)} style={{ padding: '10px 15px', borderBottom: `1px solid ${theme.border}`, cursor: 'pointer', backgroundColor: activeChat?.id === chat.id ? theme.activeChat : 'transparent', display: 'flex', gap: '12px', alignItems: 'center' }}>
-                  <LazyAvatar client={client} entity={chat.entity} size={50} fallbackText={chat.title} />
+                <div key={idx} onClick={() => openChat(chat)} style={{ padding: '12px 15px', borderBottom: `1px solid ${theme.border}`, cursor: 'pointer', backgroundColor: activeChat?.id === chat.id ? theme.activeChat : 'transparent', display: 'flex', gap: '12px', alignItems: 'center', transition: 'background-color 0.2s' }}>
+                  <LazyAvatar client={client} entity={chat.entity} size={52} fallbackText={chat.title} />
                   <div style={{ overflow: 'hidden', flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                      <h4 style={{ margin: 0, fontSize: '15px', color: theme.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: '600' }}>{chat.title}</h4>
+                      <h4 style={{ margin: 0, fontSize: '15px', color: theme.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: unreadCount > 0 ? 'bold' : '600' }}>{chat.title}</h4>
                       {chat.message?.date && (
-                        <span style={{ fontSize: '11px', color: theme.textMuted }}>{new Date(chat.message.date * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        <span style={{ fontSize: '11px', color: unreadCount > 0 ? '#0088cc' : theme.textMuted, fontWeight: unreadCount > 0 ? 'bold' : 'normal' }}>{new Date(chat.message.date * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                       )}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' }}>
@@ -971,7 +978,7 @@ function App() {
                       </p>
                       
                       {unreadCount > 0 && (
-                        <div style={{ backgroundColor: '#28a745', color: 'white', borderRadius: '10px', padding: '2px 6px', fontSize: '11px', fontWeight: 'bold', marginLeft: 'auto' }}>
+                        <div style={{ backgroundColor: '#28a745', color: 'white', borderRadius: '12px', padding: '2px 7px', fontSize: '11px', fontWeight: 'bold', marginLeft: 'auto', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>
                           {unreadCount}
                         </div>
                       )}
@@ -1011,7 +1018,7 @@ function App() {
                    onSenderProfileClick={handleOpenUserProfile} 
                 />
               ))}
-              {sendingMedia && <div style={{ alignSelf: 'flex-end', padding: '8px 15px', backgroundColor: theme.activeChat, borderRadius: '10px', color: theme.text, fontSize: '13px', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>Kuting, jo'natilmoqda... ⏳</div>}
+              {sendingMedia && <div style={{ alignSelf: 'flex-end', padding: '8px 15px', backgroundColor: theme.activeChat, borderRadius: '10px', color: theme.text, fontSize: '13px', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>Jo'natilmoqda... ⏳</div>}
               <div ref={messagesEndRef} />
             </div>
 
@@ -1057,7 +1064,7 @@ function App() {
             </div>
           </>
         ) : (
-          <div style={{ margin: 'auto', backgroundColor: isDarkMode ? '#333' : 'rgba(0,0,0,0.1)', padding: '12px 25px', borderRadius: '20px', color: theme.textMuted, fontSize: '15px', fontWeight: 'bold' }}>Chatni tanlang</div>
+          <div style={{ margin: 'auto', backgroundColor: isDarkMode ? '#333' : 'rgba(0,0,0,0.05)', padding: '12px 25px', borderRadius: '20px', color: theme.textMuted, fontSize: '15px', fontWeight: 'bold', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.1)' }}>Chatni tanlang</div>
         )}
       </div>
     </div>
